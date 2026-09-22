@@ -30,14 +30,16 @@ def _banner(kind: str) -> str:
     return "-----" + "BEGIN " + kind + "-----"
 
 
-# Markers of a key that opens the backups: age and gpg, the two tools the
-# backup encrypts with. SSH keys are left out on purpose - sshd's host keys and
-# a user's own key are where they belong, and counting them failed every real
-# server. The audit reports the FILE, never the value.
-PRIVATE_KEY_MARKERS = (
-    "AGE-SECRET-KEY-",
-    _banner("PGP PRIVATE KEY BLOCK"),
-)
+# A key that opens the backups: age and gpg, the two tools the backup encrypts
+# with. SSH keys are left out on purpose - sshd's host keys and a user's own key
+# are where they belong, and counting them failed every real server.
+#
+# The age rule matches the SHAPE of an identity - the prefix and 58 characters
+# of bech32 - not the words. Matching the words found holdfast's own source,
+# which names the marker it hunts for, and `/opt/holdfast` is where the install
+# instructions put it. The audit reports the FILE, never the value.
+AGE_IDENTITY_RE = re.compile(r"AGE-SECRET-KEY-1[QPZRY9X8GF2TVDW0S3JN54KHCE6MUA7L]{58}")
+PGP_PRIVATE_BANNER = _banner("PGP PRIVATE KEY BLOCK")
 
 ENV_NAMES = (".env", "*.env", "credentials", "*.pem", "*.key", ".my.cnf", ".pgpass")
 
@@ -119,7 +121,7 @@ def _private_key_on_host(ctx: Context):
         text = ctx.read_text(path)
         if text is None:
             continue
-        if any(marker in text for marker in PRIVATE_KEY_MARKERS):
+        if PGP_PRIVATE_BANNER in text or AGE_IDENTITY_RE.search(text):
             # The path is the finding. The key material stays in the file.
             hits.append(ctx.show(path))
     if hits:

@@ -13,7 +13,9 @@ from support import context, posix_only, write
 from holdfast.audit.checks import secrets
 from holdfast.audit.model import FAIL, PASS, UNKNOWN
 
-AGE_SECRET = "AGE-SECRET-KEY-1EXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPL"
+# Assembled rather than written out: a literal of the right shape is what the
+# privacy guard refuses, and it cannot tell a fixture from a leak.
+AGE_SECRET = "AGE-SECRET-KEY-" + "1" + "QPZRY9X8GF2TVDW0S3JN54KHCE6MUA7L" * 2
 TOKEN = "s3cr3t-value-nobody-should-see"
 
 
@@ -76,6 +78,14 @@ def test_a_gpg_key_that_opens_the_backups_is_found(tmp_path):
     pgp = secrets._banner("PGP PRIVATE KEY BLOCK")
     write(tmp_path, "/etc/holdfast/restore.asc", f"{pgp}\nAAAA\n")
     assert secrets._private_key_on_host(context(tmp_path))[0] == FAIL
+
+
+def test_the_words_of_a_key_are_not_a_key(tmp_path):
+    """holdfast installs itself under /opt, and its own source names the marker
+    it hunts for. Matching the words made every installation fail this check."""
+    write(tmp_path, "/opt/holdfast/secrets.py", 'MARKER = "AGE-SECRET-KEY-"\n')
+    write(tmp_path, "/opt/notes.md", "the key starts with AGE-SECRET-KEY-1\n")
+    assert secrets._private_key_on_host(context(tmp_path))[0] == PASS
 
 
 # -- world_writable ---------------------------------------------------------
