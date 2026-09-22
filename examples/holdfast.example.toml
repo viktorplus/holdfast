@@ -1,0 +1,230 @@
+# holdfast configuration for one machine. Written by `holdfast init`; edit it
+# afterwards. It holds one secret, api.token below, so it is worth protecting:
+# `init` writes it 0600. The other secrets stay in the environment - see
+# HOLDFAST_TELEGRAM_BOT_TOKEN and HOLDFAST_HEARTBEAT_URL.
+
+# How this machine signs itself in alerts, and the directory it owns in shared
+# storage. Unique within the collection.
+host_label = "web-1"
+
+# Which collection this machine belongs to. Empty for a standalone machine;
+# this example machine is in one, so it is named here.
+collection = "prod"
+
+[alerts]
+chat_id = "-1001234567890"
+
+[offsite]
+# One rclone destination. This machine's host_label and the snapshot name are
+# appended, so the copies of web-1 land in shared:backups/web-1/<snapshot>.
+# The credentials are NOT here and never in this file: rclone reads its own
+# configuration, including RCLONE_CONFIG_* from the environment.
+remote = "shared:backups"
+# Give up on a copy that has not finished in this long.
+timeout_minutes = 120
+
+[encryption]
+# On by default, and a missing recipient stops the backup rather than writing
+# an archive anybody who ends up with the disk can read.
+enabled = true
+# "age" or "gpg". Public keys only: a passphrase would have to live on this
+# machine, beside the copies it is supposed to protect.
+tool = "age"
+# List several - the primary key and a spare - so that losing one does not make
+# every backup unreadable, and so a new key can be introduced before the old
+# one is retired. The private keys are generated and kept elsewhere:
+#
+#   age-keygen -o key.txt      # keep key.txt off this machine, offline
+#   grep 'public key' key.txt  # the age1... line belongs here
+recipients = ["age1exampleexampleexampleexampleexampleexampleexampleexampleex"]
+# A file with one recipient per line, added to the list above rather than
+# replacing it. Lines starting with # are ignored.
+recipients_file = ""
+
+[backup]
+# Where snapshots land: one directory per run, named by timestamp.
+root = "/srv/backups"
+# Snapshots older than this many days are deleted, and this means what it says.
+# Zero turns rotation off. The newest snapshot is never deleted, whatever this
+# says - a machine whose backup broke would otherwise lose its last copy
+# exactly on schedule.
+retention_days = 7
+# Refuse to start with less than this free, before anything has been written.
+min_free_gb = 8
+# Compression. Zero threads means as many as there are cores.
+zstd_level = 10
+zstd_threads = 0
+# Held for the length of a run, so the nightly timer and a manual run cannot
+# each produce a snapshot at the same time.
+lock_file = "/run/holdfast-backup.lock"
+
+[jobs]
+# What each job last did, and when it last did it successfully. Not under
+# [backup]: the restore and the offsite copy write here too.
+dir = "/var/lib/holdfast/jobs"
+
+[api]
+token = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[audit]
+# The one thing the watchdog writes: the previous report, so that the checks
+# asking "is this the same state as last time" have something to compare with.
+state_dir = "/var/lib/holdfast/audit"
+
+# A file of campaign indicators, supplied from outside. Empty here, and empty
+# in the defaults: such a list belongs to one incident and goes stale the
+# moment it is over. See docs/configuration.md for its shape.
+indicators = ""
+
+# How far back a change to a sensitive file is still worth mentioning.
+recent_days = 14
+
+[audit.scan]
+# A real /opt or /home can hold millions of files. Every scan is bounded, and
+# a scan that hits its limit reports UNKNOWN rather than a clean result it
+# never established.
+max_files = 40000
+max_text_bytes = 1000000
+
+[audit.network]
+# Outbound traffic to these ports is ordinary; anything else is worth a look.
+allowed_out_ports = [80, 443, 53, 123, 25, 465, 587, 993, 995, 22]
+# Individual peers this machine legitimately reaches on an odd port.
+allowed_out_addresses = []
+# Ports whose publication by Docker to the world is expected. Docker publishes
+# past the host firewall, so an enabled firewall does not mean a closed port.
+allowed_published_ports = [80, 443]
+
+[audit.ssh]
+# Addresses expected to log in by key. Empty means ordinary key logins are not
+# reported at all - a page of expected logins every run is how the one
+# unexpected login goes unnoticed. Password and root logins are reported
+# whatever this says.
+allowed_login_addresses = []
+
+[audit.temp]
+# A file in a temporary directory is interesting while it is this new.
+window_minutes = 60
+# Names that are ordinary on this machine.
+ignore = 'sess_|systemd-private|snap\.|pear|php[A-Za-z0-9]{6}$'
+
+[audit.cpu]
+# Sustained load that looks like mining: percent of one core, averaged over
+# the process's whole life, and how long it must have run before it counts.
+limit_percent = 90
+min_age_seconds = 1800
+ignore = "mysqldump|tar |gzip|xz|composer|npm|rsync|restic|borg|apt|dpkg"
+
+[audit.integrity]
+# Extra files under integrity control. sshd_config.d, cron.d, sudoers.d and
+# every authorized_keys are added automatically.
+watch_files = []
+# Slices of live configuration watched for drift. docker and cron move on
+# every deployment and are off by default.
+watch_slices = ["sshd", "users", "listen"]
+
+[audit.datastore]
+# Files a data store writes to disk. A key or a cron line inside one of these
+# got there by someone else's hand.
+files = ["dump.rdb", "appendonly.aof", "appendonly.aof.*"]
+
+[audit.origin]
+# The CDN or WAF in front of this machine, named only so the manual
+# instruction can say which one to test against.
+service = ""
+
+[audit.web]
+# What is being served, declared rather than guessed. This release knows
+# "laravel" and "nginx"; anything else, or nothing, makes the Application
+# checks report UNKNOWN instead of assuming.
+framework = "laravel"
+server = "nginx"
+# Document roots, for a server whose configuration holdfast cannot read.
+roots = []
+
+[audit.tls]
+# Warn this many days before a certificate expires; fail at half of it.
+warn_days = 30
+
+[audit.logs]
+# Below this depth an investigation has nothing older to look at.
+min_days = 30
+
+[audit.backup]
+# Where snapshots land. Read as a directory, so it answers whoever wrote them.
+root = "/srv/backups"
+# Older than this is a delay; more than twice this is a failure.
+max_age_hours = 26
+
+[audit.http]
+# The one check in holdfast that sends a request. Empty means it sends nothing.
+url = "https://example.com/"
+ok_codes = [200, 301, 302]
+
+[audit.admin]
+# A command printing one line per administrator, such as id:username:role.
+# Every application has its own schema and this audit does not guess one.
+# Never put a password here - let the command read one from a defaults file.
+command = ""
+
+# --------------------------------------------------------------------------
+# What this machine keeps
+# --------------------------------------------------------------------------
+#
+# Order is the order of the backup, and nothing sorts it: it is the operator's
+# statement about what depends on what. `holdfast backup --dry-run` prints the
+# shell line each component produces, without producing anything.
+#
+# `holdfast backup --discover` looks this machine over and prints a first draft
+# of the list below, which is quicker to cross things out of than to write.
+
+[[component]]
+# A logical dump, not a copy of the data directory: a dump loads into another
+# version, another machine and another filesystem, and a copy of the files
+# loads into almost nothing. Globals carry the roles, without which a restored
+# database is one nobody may use.
+type = "postgres"
+name = "example-db"
+container = "example-postgres"
+user = "example"
+databases = ["*"]
+globals = true
+
+[[component]]
+type = "mysql"
+name = "example-shop"
+container = "example-mysql"
+databases = ["*"]
+# A credentials file that mysqldump reads itself. holdfast never holds the
+# password - only this path, which is not a secret. Keep the file 0600.
+defaults_file = "/etc/holdfast/mysql.cnf"
+
+[[component]]
+# One component, many artifacts: everything docker has, minus these names,
+# minus anything larger than max_mb. A rule rather than a list, so a volume
+# added next month is covered without anybody remembering to add it.
+type = "docker_volume"
+name = "volumes"
+# The database's own volume belongs to the dump above, not here.
+exclude = ["example_pg_data"]
+max_mb = 512
+
+[[component]]
+type = "path"
+name = "mail-config"
+path = "/opt/example"
+exclude = ["*/logs/*", "*.sock"]
+
+[[component]]
+# The declared seam for whatever the other types do not cover. The command is
+# run exactly as written; holdfast adds no compression of its own, so that the
+# manifest describes what was actually stored.
+type = "command"
+name = "inventory"
+produce = "/usr/local/bin/dump-inventory --format json"
+artifact = "inventory.json"
+# What holdfast cannot know is the format, so it claims nothing about it. With
+# no restore table the manifest says so, and `holdfast restore` leaves this
+# artifact alone rather than guessing. With no check, all that is claimed is
+# that the bytes read back end to end.
+check = "python3 -c 'import json,sys; json.load(sys.stdin)'"

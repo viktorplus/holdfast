@@ -1,0 +1,21 @@
+# A collection profile holds what several machines share. It never holds a
+# secret, so it is safe to copy to a new machine or keep in a private
+# repository. Each block is optional: leave one out and the machine gets its
+# own value instead.
+
+collection = "prod"
+
+[alerts]
+# Where every machine in this collection reports. The bot token is NOT here:
+# it belongs in HOLDFAST_TELEGRAM_BOT_TOKEN on each machine.
+chat_id = "-1001234567890"
+
+[offsite]
+# The shared rclone destination. Credentials are NOT here: each machine keeps
+# its own, so losing one machine does not expose the others' copies.
+remote = "shared:backups"
+
+[encryption]
+# Public keys only. List more than one so that losing a key does not make the
+# backups unreadable.
+recipients = ["age1exampleexampleexampleexampleexampleexampleexampleexampleex"]

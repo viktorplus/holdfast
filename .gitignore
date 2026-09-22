@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.ruff_cache/
+*.local.toml
+.env
+
+# What a contributor trying the tool in a clone leaves behind: holdfast.toml
+# carries this machine's api.token, and a profile is an estate's own business.
+holdfast.toml
+profile.toml
+estate-patterns.txt

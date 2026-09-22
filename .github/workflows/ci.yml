@@ -1,0 +1,115 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: pip install ruff
+      - run: ruff check .
+      - run: ruff format --check .
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+      - run: pip install -e . pytest
+      - run: python -m pytest -v
+
+  shell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - run: |
+          found=$(find . -name '*.sh' -not -path './.git/*')
+          if [ -n "$found" ]; then shellcheck $found; fi
+
+  privacy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: guard passes on this tree
+        run: python -m tools.privacy_guard .
+      - name: guard fails on a planted leak
+        run: |
+          mkdir -p /tmp/planted
+          # the address is assembled here so that this workflow file does not
+          # itself trip the guard it is testing
+          octet=9
+          printf 'ssh root@%s.%s.%s.%s\n' "$octet" "$octet" "$octet" "$octet" \
+            > /tmp/planted/leak.md
+          if python -m tools.privacy_guard /tmp/planted; then
+            echo "the guard passed a planted leak; it is not working"
+            exit 1
+          fi
+
+  watchdog:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: pip install -e .
+      # A green test suite says the checks behave when called. It does not say
+      # the program runs. These two steps do: the same binary, against a tree
+      # on disk, judged only by its exit code.
+      - name: the watchdog finds a tampered machine
+        run: |
+          set -eu
+          root=$(mktemp -d)
+          mkdir -p "$root/etc/ssh" "$root/etc/cron.d"
+          printf 'PermitRootLogin yes\n' > "$root/etc/ssh/sshd_config"
+          printf '/usr/lib/libhide.so\n' > "$root/etc/ld.so.preload"
+          if holdfast --config-dir "$root/absent" audit --no-docker --host "$root"; then
+            echo "the watchdog passed a tampered machine; it is not working"
+            exit 1
+          fi
+      - name: the watchdog passes a machine that is in order
+        run: |
+          set -eu
+          root=$(mktemp -d)
+          mkdir -p "$root/etc/ssh" "$root/etc/fail2ban" "$root/var/log"
+          printf 'Port 22\nPermitRootLogin no\nPasswordAuthentication no\n' \
+            > "$root/etc/ssh/sshd_config"
+          printf '[sshd]\nenabled = true\nport = 22\n' \
+            > "$root/etc/fail2ban/jail.local"
+          printf 'root:x:0:0::/root:/usr/sbin/nologin\n' > "$root/etc/passwd"
+          printf '[Journal]\nSystemMaxUse=500M\n' \
+            > "$root/etc/systemd/journald.conf" 2>/dev/null \
+            || { mkdir -p "$root/etc/systemd"; \
+                 printf '[Journal]\nSystemMaxUse=500M\n' \
+                   > "$root/etc/systemd/journald.conf"; }
+          mkdir -p "$root/etc/docker" "$root/etc/rsyslog.d"
+          printf '{"log-opts": {"max-size": "10m"}}\n' > "$root/etc/docker/daemon.json"
+          printf '*.* @@logs.example.com:514\n' > "$root/etc/rsyslog.d/50-remote.conf"
+          touch -d '120 days ago' "$root/var/log/auth.log"
+          # and it sends its snapshots offsite, and has been restored from
+          mkdir -p "$root/config" "$root/var/lib/holdfast/jobs"
+          printf 'host_label = "ci"\n[offsite]\nremote = "shared:backups"\n' \
+            > "$root/config/holdfast.toml"
+          now=$(date -u +%Y-%m-%dT%H:%M:%S+00:00)
+          for kind in offsite restore; do
+            entry=$(printf '{"at": "%s", "ok": true, "snapshot": "20260920-231500"}' "$now")
+            printf '{"kind": "%s", "last_run": %s, "last_success": %s}\n' \
+              "$kind" "$entry" "$entry" > "$root/var/lib/holdfast/jobs/$kind.json"
+          done
+          holdfast --config-dir "$root/config" audit --no-docker --no-offsite \
+            --host "$root"
