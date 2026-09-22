@@ -316,8 +316,18 @@ docker compose up -d db
 docker exec app-db-1 mysql --defaults-file=/etc/holdfast/mysql.cnf -N -e "show databases"
 ```
 
-Последняя команда должна перечислить базы. В конфигурации holdfast указывается
-путь **внутри контейнера** — `/etc/holdfast/mysql.cnf`.
+Последняя команда должна перечислить базы.
+
+Теперь скажите holdfast, где лежит этот файл. Откройте
+`/etc/holdfast/holdfast.toml` и в блоке `mysql` уберите `#` перед строкой
+`defaults_file` — в черновике от `--discover` она закомментирована:
+
+```toml
+defaults_file = "/etc/holdfast/mysql.cnf"
+```
+
+Путь указывается **внутри контейнера**, а не на хосте. Без этой строки
+`holdfast backup --dry-run` остановится на `Access denied ... (using password: NO)`.
 
 Для PostgreSQL всё то же, только файл в формате `.pgpass`, а ключ называется
 так же — `defaults_file`.
