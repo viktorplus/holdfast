@@ -21,6 +21,18 @@ from typing import Any, ClassVar
 NAME = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
 
+def slug(text: str) -> str:
+    """Turn a name a human or Docker chose into one NAME accepts.
+
+    Auto-discovery reads container names, not operator-picked ones, so it
+    cannot assume the result already fits: this is the one place that makes
+    it fit, lower-cased with anything outside [a-z0-9_-] folded to a dash and
+    the edges trimmed, falling back to a fixed name rather than an empty one.
+    """
+    cleaned = re.sub(r"[^a-z0-9_-]+", "-", text.lower()).strip("-_")
+    return cleaned or "component"
+
+
 class BackupError(Exception):
     """Something the operator can fix, in the configuration or on the machine."""
 

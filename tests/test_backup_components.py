@@ -5,9 +5,25 @@ from support import needs_sh
 
 from holdfast.backup import BackupError, component_types
 from holdfast.backup.engine import run_line
-from holdfast.backup.model import BuildContext
+from holdfast.backup.model import NAME, BuildContext, slug
 
 CTX = BuildContext(zstd_level=10, zstd_threads=0)
+
+
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        ("myapp-db-1", "myapp-db-1"),
+        ("/var/www/html", "var-www-html"),
+        ("Stalwart Mail", "stalwart-mail"),
+        ("_x_", "x"),
+        ("///", "component"),
+    ],
+)
+def test_slug_produces_a_usable_component_name(text, expected):
+    result = slug(text)
+    assert result == expected
+    assert NAME.match(result)
 
 
 def build(type_name: str, **table):

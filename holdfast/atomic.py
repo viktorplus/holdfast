@@ -20,12 +20,18 @@ from pathlib import Path
 from typing import Any
 
 
-def write_json(path: Path, data: Any) -> Path:
-    """Write ``data`` to ``path`` as JSON, atomically, mode 0600."""
+def write_text(path: Path, text: str) -> Path:
+    """Write ``text`` to ``path`` atomically, mode 0600.
+
+    What write_json below does with a dict, components.toml needs to do with
+    a string it already built (TOML, not JSON), so the atomic swap moved
+    here and write_json became a one-line caller of it, rather than growing
+    a second copy of the same replace-in-place dance.
+    """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.parent / f".{path.name}.new"
-    temporary.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
+    temporary.write_text(text, encoding="utf-8")
     try:
         temporary.chmod(stat.S_IRUSR | stat.S_IWUSR)
     except OSError:
@@ -34,3 +40,8 @@ def write_json(path: Path, data: Any) -> Path:
         pass
     os.replace(temporary, path)
     return path
+
+
+def write_json(path: Path, data: Any) -> Path:
+    """Write ``data`` to ``path`` as JSON, atomically, mode 0600."""
+    return write_text(path, json.dumps(data, indent=2, sort_keys=True))
