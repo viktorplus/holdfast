@@ -35,6 +35,10 @@ LIST_DATABASES = (
 # database named, than during a recovery.
 DATABASE_NAME = re.compile(r"^[A-Za-z0-9_.][A-Za-z0-9_.-]*$")
 
+# What psql says when the server wants a password it was not given: none at
+# all, or a wrong one from somewhere other than a password file.
+PASSWORD_REFUSALS = ("no password supplied", "password authentication failed")
+
 # pg_dump -Fc writes its own compressed format, so nothing is stacked on top.
 DUMP_SIGNATURE = 'magic=$(head -c 5); cat >/dev/null; [ "$magic" = PGDMP ]'
 
@@ -175,9 +179,25 @@ class PostgresComponent(Component):
             argv, env = self._argv(
                 "psql", "-U", self.user, "-d", "postgres", "-At", "-c", LIST_DATABASES
             )
-            answer = ctx.probe.capture(
-                argv, what=f"listing the databases of {self.name!r}", env=env or None
-            )
+            try:
+                answer = ctx.probe.capture(
+                    argv,
+                    what=f"listing the databases of {self.name!r}",
+                    env=env or None,
+                )
+            except BackupError as error:
+                # The --discover draft leaves defaults_file commented out, and
+                # psql's refusal does not say which line of holdfast.toml to
+                # change.
+                if self.defaults_file or not any(
+                    refusal in str(error) for refusal in PASSWORD_REFUSALS
+                ):
+                    raise
+                raise BackupError(
+                    f"{error} - this component has no defaults_file, so psql "
+                    "had no password file to read; set defaults_file in its "
+                    "[[component]] table"
+                ) from None
             found = [line.strip() for line in answer.splitlines() if line.strip()]
             if not found:
                 # Not "nothing to do". A psql that failed on authentication used

@@ -312,6 +312,33 @@ def test_a_running_postgres_with_no_databases_stops_the_backup():
         a_postgres(container="c").artifacts(ctx_with(probe))
 
 
+@pytest.mark.parametrize(
+    "refusal",
+    [
+        "psql: error: fe_sendauth: no password supplied",
+        'FATAL:  password authentication failed for user "signal"',
+    ],
+)
+def test_a_refused_postgres_login_without_a_password_file_names_the_missing_key(
+    refusal: str,
+):
+    """The --discover draft leaves defaults_file commented out, and psql's own
+    words do not say which line to change."""
+    probe = FakeProbe(running={"c"}, fails=refusal)
+    with pytest.raises(BackupError, match="defaults_file"):
+        a_postgres(container="c").artifacts(ctx_with(probe))
+
+
+def test_a_refused_postgres_login_with_a_password_file_is_left_as_psql_said_it():
+    probe = FakeProbe(running={"c"}, fails="fe_sendauth: no password supplied")
+    with pytest.raises(BackupError) as caught:
+        a_postgres(container="c", defaults_file="/etc/holdfast/pgpass").artifacts(
+            ctx_with(probe)
+        )
+
+    assert "defaults_file" not in str(caught.value)
+
+
 @pytest.mark.parametrize("name", ["a/b", "a b", "a;b", "-"])
 def test_a_database_name_that_would_not_survive_the_manifest_is_refused(name: str):
     """A slash writes the artifact outside its directory; a control character
@@ -498,6 +525,24 @@ def test_the_credentials_file_comes_first_on_the_command_line():
 
     assert produce.startswith("mysqldump --defaults-file=/etc/holdfast/mysql.cnf ")
     assert probe.asked[-1][1] == "--defaults-file=/etc/holdfast/mysql.cnf"
+
+
+def test_a_refused_login_without_a_credentials_file_names_the_missing_key():
+    """The --discover draft leaves defaults_file commented out, and mysql's own
+    words - "using password: NO" - do not say which line to change."""
+    probe = FakeProbe(running={"c"}, fails="ERROR 1045 (28000): Access denied")
+    with pytest.raises(BackupError, match="defaults_file"):
+        a_mysql(container="c").artifacts(ctx_with(probe))
+
+
+def test_a_refused_login_with_a_credentials_file_is_left_as_mysql_said_it():
+    probe = FakeProbe(running={"c"}, fails="ERROR 1045 (28000): Access denied")
+    with pytest.raises(BackupError) as caught:
+        a_mysql(container="c", defaults_file="/etc/holdfast/mysql.cnf").artifacts(
+            ctx_with(probe)
+        )
+
+    assert "defaults_file" not in str(caught.value)
 
 
 def test_the_mysql_recipe_and_check_say_what_they_know():

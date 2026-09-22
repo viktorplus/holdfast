@@ -139,10 +139,22 @@ class MysqlComponent(Component):
         if list(self.databases) != ["*"]:
             found = list(self.databases)
         else:
-            answer = ctx.probe.capture(
-                self._argv("mysql", "-N", "-B", "-e", LIST_DATABASES),
-                what=f"listing the databases of {self.name!r}",
-            )
+            try:
+                answer = ctx.probe.capture(
+                    self._argv("mysql", "-N", "-B", "-e", LIST_DATABASES),
+                    what=f"listing the databases of {self.name!r}",
+                )
+            except BackupError as error:
+                # The --discover draft leaves defaults_file commented out, and
+                # mysql's refusal does not say which line of holdfast.toml to
+                # change.
+                if self.defaults_file or "Access denied" not in str(error):
+                    raise
+                raise BackupError(
+                    f"{error} - this component has no defaults_file, so mysql "
+                    "ran without a password; set defaults_file in its "
+                    "[[component]] table"
+                ) from None
             found = [
                 line.strip()
                 for line in answer.splitlines()
