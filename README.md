@@ -115,6 +115,7 @@ holdfast has no scheduler of its own. `docs/install.md` has an example.
 | [`docs/backup.md`](docs/backup.md) | components, the snapshot layout, encryption, the second copy |
 | [`docs/restore.md`](docs/restore.md) | listing, verifying and restoring a snapshot, and rehearsing it |
 | [`docs/threat-model.md`](docs/threat-model.md) | what a point-in-time scanner can and cannot see |
+| [`docs/setup-ru.md`](docs/setup-ru.md) | пошаговая установка и настройка на сервере (на русском) |
 
 ## What it can and cannot see
 
