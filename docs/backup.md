@@ -1,13 +1,201 @@
 # Backup
 
-What holdfast keeps is declared, not built in. A machine lists the parts worth
-keeping as `[[component]]` tables, and the engine turns that list into one
-snapshot per run.
+What holdfast keeps is a list of components, and the engine turns that list
+into one snapshot per run. The list comes from two places: the
+`[[component]]` tables the operator writes in `holdfast.toml`, and - on a
+Docker host - a rule that works out what the machine runs and what of it is
+worth keeping.
 
 ```sh
-holdfast backup --dry-run    # print what would run, produce nothing
+holdfast backup --dry-run    # print what would run, and what was left out
 holdfast backup              # produce a snapshot
 ```
+
+## Two modes
+
+```toml
+[backup]
+mode = "auto"      # or "manual"
+exclude = []
+```
+
+| Mode | Where the list comes from | When the rule runs |
+|---|---|---|
+| `auto` | the rule, plus `holdfast.toml` | at every `backup` and `backup --dry-run` |
+| `manual` | `holdfast.toml`, plus `components.toml` | only when `holdfast backup --discover` is run |
+
+`holdfast init --backup-mode auto|manual` writes the mode into a new
+`holdfast.toml`, `auto` by default; changing the line later changes the mode.
+A configuration with no `backup.mode` - every installation made before 0.3.0 -
+is `manual`, and behaves as it did: only the components it declares, and the
+machine is not looked at.
+
+`auto` is right for most machines: a container or a volume added this
+afternoon is in tonight's snapshot without anybody editing anything. `manual`
+is for a machine whose snapshot should change only after a person has read
+the change.
+
+In both modes a hand-written component wins. Whatever it covers - the same
+path, the same volume, the database container it names - the rule leaves
+alone, and says so.
+
+## The rule
+
+The rule's picture of the machine is one `docker inspect` of every container,
+running or stopped, and the list of volumes Docker knows. It keeps the names
+of the containers' environment variables and none of their values, except
+three that are not secrets: `PGDATA`, `POSTGRES_USER`, and the
+`*_ALLOW_EMPTY_*PASSWORD` switches. A Docker that does not answer fails the
+run: "no containers" is never inferred from an error, because that is how an
+empty snapshot reports success.
+
+It takes four things:
+
+1. **databases**, as dumps. A container is a database by its image name -
+   `mysql`, `mariadb`, `percona`, `percona-server` for MySQL, `postgres`,
+   `postgis` for PostgreSQL - with any registry or tag. Every database is
+   dumped except the server's own: `information_schema`,
+   `performance_schema`, `sys` and `mysql` for MySQL, the template
+   databases for PostgreSQL, which also gets its roles;
+2. **compose project directories**, whole, one per project, found from the
+   labels `docker compose` puts on its containers. A database's data
+   directory bound inside the project is left out of that archive;
+3. **volumes**, named or anonymous, mounted by any container, running or
+   stopped - one artifact per volume however many containers share it;
+4. **bind mounts outside the project directories**, files or directories.
+
+Hosts outside Docker are not looked at. What the machine keeps outside Docker
+is declared by hand, as a `path` or `command` component.
+
+Everything the rule considers and does not take is reported, in the dry run,
+in the backup's output and in the manifest's `skipped` list:
+
+| Reason | What it means |
+|---|---|
+| `no container uses it` | an orphaned volume. holdfast never removes it |
+| `database data, covered by the dump` | the directory a database container keeps its files in |
+| `excluded by you` | named in `backup.exclude`, directly or through its container |
+| `declared by hand` | a component in `holdfast.toml` already covers it |
+| `system` | a bind mount of `/`, `/proc`, `/sys`, `/dev`, `/run`, `/var/run`, `/var/lib/docker`, `/etc/localtime`, `/etc/timezone`, or any socket |
+| `the snapshots themselves` | inside `backup.root` |
+| `inside a compose project directory` | already in that project's archive |
+| `inside another bind mount already taken` | already in that mount's archive |
+| `not on this machine` | a bind mount whose source is not on disk |
+| `the project directory is not on this machine` | a compose project whose directory is not on disk |
+
+There is no size limit in the rule: everything is taken, and what is not
+wanted is excluded by name. Before the first byte is written, the rule adds
+up the size of everything it takes - database data directories standing in
+for their dumps - and a run that would leave less than `backup.min_free_gb`
+free is refused with the estimate and the free space in the message. The
+estimate is before compression and counts a database both as its dump and
+inside its project, so it errs towards refusing.
+
+What stops the run rather than being reported: a MySQL container with no root
+password in its environment, a database container that is not running, a
+Docker that does not answer, an estimate that does not fit, a malformed
+`backup.exclude`, and two artifacts that would be written to the same file.
+
+### Excluding
+
+```toml
+[backup]
+exclude = [
+  "volume:myapp_cache",
+  "path:/srv/old-site",
+  "database:myapp-db-1/scratch",
+  "container:myapp-adminer-1",
+]
+```
+
+| Kind | Leaves out |
+|---|---|
+| `volume:<name>` | one volume, named or anonymous |
+| `path:<absolute path>` | a project directory or a bind mount source at or under that path |
+| `database:<container>/<database>` | one database; the container's others are still dumped |
+| `container:<name>` | its dumps, its bind mounts, and its volumes unless another container uses them |
+
+`path:` does not cut a subdirectory out of a project archive: a project is
+taken whole or not at all. Declare the project by hand as a `path` component
+with its own `exclude` for that. `container:` does not leave out the
+container's compose project, which belongs to every service in it.
+
+An unknown kind, an empty value or a relative path is a configuration error,
+in both modes, not a silent skip.
+
+### What the components are called
+
+| What | Component | File in the snapshot |
+|---|---|---|
+| project directory of project `P` | `project-P` | `project-P.tar.zst` |
+| bind mount outside a project | `mount-<slug of the source>` | `mount-<slug>.tar.zst` |
+| named volume `V` | `volume-<slug of V>` | `docker-volumes/V.tar.zst` |
+| anonymous volume at `D` in container `C` | `volume-C-<slug of D>` | `docker-volumes/C--<slug of D>.tar.zst` |
+| MySQL container `C` | `<slug of C>` | `mysql/<slug of C>-<database>.sql.zst` |
+| PostgreSQL container `C` | `<slug of C>` | as any `postgres` component |
+
+A slug is the name lower-cased, with anything outside `a-z 0-9 _ -` folded to
+a dash. The component name is what `holdfast restore --component` takes. A
+name already taken - by `holdfast.toml` or by an earlier find - gets `-2`,
+`-3`.
+
+An anonymous volume is named after its container and mount point because its
+own name is random, and different on every machine compose brings the
+application up on. For the same reason its restore recipe keeps the
+container and the path, not the name - see `docs/restore.md`.
+
+### components.toml
+
+In `manual` mode, `holdfast backup --discover` runs the rule once and writes
+what it found to `components.toml` beside `holdfast.toml`
+(`/etc/holdfast/components.toml` by default):
+
+```
+wrote /etc/holdfast/components.toml (3 components)
+
+changes:
+  + myapp-db-1 (mysql)
+  + project-myapp (path)
+  + volume-myapp-wordpress-1-var-www-html (docker_volume)
+
+not taken:
+  bind mount /root/myapp/db_data: database data, covered by the dump
+```
+
+The file is written whole every time, `0600`, and the previous one is kept as
+`components.toml.prev`. `changes:` lists what was added (`+`), removed (`-`)
+or changed (`~`) against the previous file, or says `no changes`. The file is
+holdfast's, not the operator's: `holdfast.toml` keeps its comments only as
+long as nothing rewrites it, so discovery writes here instead, and the
+operator's own components and exclusions stay in `holdfast.toml`, where
+`--discover` also reads them.
+
+Its components are frozen: a path, a volume by name or an anonymous volume by
+container and mount point, a database container with `databases = ["*"]`.
+New databases in a known container are therefore picked up at every backup;
+a new container, project, named volume or bind mount needs `--discover` again.
+
+A backup reads `components.toml` only if its first line is the one
+`--discover` writes. A file without it - the draft holdfast 0.2's
+`--discover` printed, saved to that path - is ignored with a warning rather
+than backed up as it stands. In `auto` mode the file is not read at all, and
+its presence is a warning too. `--discover` in `auto` mode writes nothing and
+points at `--dry-run`.
+
+### Upgrading from 0.2
+
+A 0.2 configuration keeps working unchanged: it has no `backup.mode`, which
+is `manual`. Two things change at once all the same: MySQL's own `mysql`
+schema is no longer dumped, and a MySQL restore now uses the same
+`defaults_file` the dump did. To move to the rule, set `mode = "auto"` under
+`[backup]`, remove the `[[component]]` tables it now covers - typically the
+database container, the every-volume `docker_volume` table and the project
+`path` - keep the ones for data outside Docker, delete a 0.2 draft left at
+`components.toml`, and read `holdfast backup --dry-run`.
+
+A MySQL credentials file that 0.2 had mounted into the database container is
+not needed by the rule. If it sits inside the project directory it is
+archived with the project, encrypted like everything else.
 
 ## A component
 
@@ -34,7 +222,7 @@ is the failure this tool exists to make impossible.
 | `path` | a directory or file, as a tar stream through zstd |
 | `postgres` | logical dumps, one per database, plus the globals |
 | `mysql` | logical dumps, one per database |
-| `docker_volume` | every volume below a size limit, minus a skip list |
+| `docker_volume` | one volume, by name or by container and mount point; or every volume below a size limit, minus a skip list |
 | `command` | whatever the operator's own command produces |
 
 `command` is the declared seam, and the honest answer to "it has to back up any
@@ -46,7 +234,9 @@ What holdfast cannot know is the format, so it claims nothing about it: with no
 that artifact alone rather than guess.
 
 Order is the order of the list. Nothing sorts it, because the order is the
-operator's statement about what depends on what.
+operator's statement about what depends on what. In `auto` mode the
+hand-written components come first, then the rule's: databases, projects,
+volumes, bind mounts.
 
 ## Databases, and the password holdfast does not hold
 
@@ -57,12 +247,43 @@ nobody has permission to use.
 
 A dump rather than a copy of the data directory, because a dump loads into a
 different minor version, a different machine and a different filesystem, and a
-copy of the files loads into almost nothing. For the same reason a database's
-own Docker volume belongs in the `docker_volume` component's `exclude`: taking
-it as well stores a second, worse copy of the same data.
+copy of the files loads into almost nothing. For the same reason the rule
+leaves a database container's data directory out of everything else it takes,
+and a database's own Docker volume belongs in a hand-written every-volume
+`docker_volume` component's `exclude`: taking it as well stores a second,
+worse copy of the same data.
 
-**holdfast never sees a password.** The server reads its own credentials file,
-and the configuration carries the path to that file, which is not a secret:
+**holdfast never sees a password.** A database the rule finds is reached with
+the password its own container was started with. The component carries the
+*name* of the variable, and the dump runs in the container's shell, which
+expands it and hands it to the client as `MYSQL_PWD` - not in argv, where a
+process list shows it, and never through holdfast or onto a disk:
+
+```toml
+[[component]]
+type = "mysql"
+name = "myapp-db-1"
+container = "myapp-db-1"
+user = "root"
+credentials = "container_env"
+password_env = "MYSQL_ROOT_PASSWORD"
+```
+
+The rule looks for `MARIADB_ROOT_PASSWORD`, `MYSQL_ROOT_PASSWORD`, then their
+`_FILE` forms, whose file is read inside the container; an
+`*_ALLOW_EMPTY_*PASSWORD` switch means root without a password. A container
+with none of them - one started with `MYSQL_RANDOM_ROOT_PASSWORD`, say - stops
+the run and names the two ways out: declare the component by hand with
+`defaults_file`, or exclude the container. The client is whichever the
+container has, `mariadb-dump` or `mysqldump`: MariaDB 11 images no longer carry
+the `mysql` names. PostgreSQL needs no password at all: `psql -U` runs inside
+the container over its local socket, as the role from `POSTGRES_USER`.
+
+The container's variable goes stale in one way: the image reads it once, when
+the data directory is first created, so a root password changed afterwards is
+not in it. The refusal says so, and the answer is `defaults_file`. With it,
+the server reads its own credentials file, and the configuration carries the
+path to that file, which is not a secret:
 
 ```toml
 [[component]]
@@ -74,7 +295,11 @@ defaults_file = "/etc/holdfast/mysql.cnf"
 
 For PostgreSQL the same key names a libpq password file, which is passed as
 `PGPASSFILE`. Keep either file `0600`. With `container` set, the path is the
-one inside the container.
+one inside the container. `credentials` and `defaults_file` together are a
+configuration error: they are two sources of one password.
+
+A component declared by hand for a container wins over the rule, which then
+reports that container as `declared by hand`.
 
 Both types work without Docker: leave `container` out and the tools are run
 directly. Docker is optional throughout holdfast, and a machine without it is
@@ -84,7 +309,7 @@ Four refusals are worth knowing before the first night:
 
 | What happens | Why it is not a warning |
 |---|---|
-| a declared container is not running | the old script returned success here, having dumped nothing at all |
+| a database container is not running | the old script returned success here, having dumped nothing at all |
 | a running server lists no databases | that is what a `psql` failing on authentication looks like |
 | a database name is not a plain word | a slash writes the artifact outside the snapshot, a control character breaks the manifest |
 | a volume's storage cannot be read | under rootless Docker it never can be; say so in `exclude` if it is not wanted |
@@ -93,27 +318,39 @@ A volume larger than `max_mb` is the one thing that is skipped quietly, because
 the limit is a rule the operator wrote. The rule is in the manifest, which is
 how a missing volume gets explained later; the list of what it skipped is not.
 
-## Finding out what to declare
+## Seeing what a run will take
 
 ```sh
-holdfast backup --discover
+holdfast backup --dry-run
 ```
 
-It looks the machine over and prints a draft `[[component]]` list: the database
-containers it recognised, a `docker_volume` rule with the oversized and
-database-owned volumes already crossed out, and a `path` component per directory
-under `/opt`. Crossing things out of a proposal is work somebody will do;
-writing the list from a blank file is work they will put off. The same idea as
-`audit --baseline`, at the other end of the tool.
+It makes the same selection the backup makes and prints it, writing nothing:
 
-It prints and never writes, and it reads no configuration at all - this is the
-command for a machine nobody has set up yet. It is also the one place that
-tolerates a silent machine: without Docker it prints the `path` components and
-a comment saying why there is nothing else, because advice has nothing to fail
-at.
+```
+mode: auto
+myapp-db-1 (mysql, from rule, ~210 MB)
+  mysql/myapp-db-1-wordpress.sql.zst.age
+    docker exec myapp-db-1 sh -c '...; export MYSQL_PWD="$MYSQL_ROOT_PASSWORD"; exec "$c" -uroot ... --databases wordpress' | zstd -T0 -10 -q | age --encrypt -r age1...
+project-myapp (path, from rule, ~210 MB)
+  project-myapp.tar.zst.age
+    ls -d -- /root/myapp >/dev/null && tar ... --exclude=root/myapp/db_data -cf - -C / root/myapp | zstd -T0 -10 -q | age --encrypt -r age1...
+volume-myapp-wordpress-1-var-www-html (docker_volume, from rule, ~105 MB)
+  docker-volumes/myapp-wordpress-1--var-www-html.tar.zst.age
+    tar ... -cf - -C /var/lib/docker/volumes/<volume>/_data . | zstd -T0 -10 -q | age --encrypt -r age1...
 
-It guesses, so read it. It cannot see which role may read every database, and
-it says so where it had to write one down.
+not taken:
+  volume <64 hex characters>: no container uses it
+  bind mount /root/myapp/db_data: database data, covered by the dump
+
+estimated size before compression: 525 MB
+```
+
+Per component: its name, type, where it came from (`rule`, `holdfast.toml` or
+`components.toml`) and, for the rule's, the estimated size; then each artifact
+and the exact line that will produce it. After them, what was not taken and
+why, the estimate, and any warnings. A dry run refuses what the backup would
+refuse, so a clean one means the configuration is sound - though not that
+every container will answer tonight.
 
 ## A snapshot
 
@@ -136,7 +373,9 @@ is inside it, in a form a person can read. It holds the tool version, the
 timestamp, this machine's `host_label`, the compression and encryption settings
 with the list of recipients, a description of each component, and per artifact:
 its path, size, `sha256`, the recipe for putting it back, and the command that
-checks it.
+checks it. In `auto` mode it also holds `skipped`: everything the rule left
+out, each with its reason, so a volume missing from the snapshot is explained
+by the snapshot itself.
 
 Nothing in it is a secret. Every description fed into it gives the shape of a
 thing and not its contents - a `command` component's own command line stays

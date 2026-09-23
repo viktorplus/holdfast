@@ -48,9 +48,10 @@ ln -s /opt/holdfast/bin/holdfast /usr/local/bin/holdfast
 holdfast version
 ```
 
-To upgrade, pull the clone and run the same `pip install` again. The
-configuration and everything holdfast has recorded live outside
-`/opt/holdfast`, and an upgrade does not touch them.
+To upgrade, pull the clone and run the same `pip install` again, then
+`holdfast version` to see the new number. The configuration and everything
+holdfast has recorded live outside `/opt/holdfast`, and an upgrade does not
+touch them. Coming from 0.2, see "Upgrading from 0.2" in `docs/backup.md`.
 
 ## A standalone machine
 
@@ -61,6 +62,12 @@ holdfast init --fresh
 This writes `holdfast.toml` in the configuration directory, `/etc/holdfast`
 by default. It refuses to run if that file already exists, so a second `init`
 never resets a machine by accident.
+
+`--backup-mode auto` (the default) or `--backup-mode manual` decides how the
+backup finds what to keep: worked out from Docker at every run, or written
+down by `holdfast backup --discover` and kept until it is run again. It is
+written as `backup.mode` and changed later by editing that line; see
+`docs/backup.md`.
 
 `--config-dir` overrides that directory, and it belongs before the
 subcommand:
@@ -80,6 +87,7 @@ The file it writes:
 - `collection` - empty. A standalone machine belongs to no collection.
 - `alerts.chat_id`, `offsite.remote`, `encryption.recipients` - empty.
   Nothing is shared until something is.
+- `backup.mode` - `auto`, or what `--backup-mode` said.
 - `api.token` - a fresh 64-character secret, generated on the spot and never
   reused between machines.
 
@@ -224,8 +232,9 @@ second run onward a changed `sshd_config` or a new administrator is named.
 
 ## The first backup
 
-Before the first `holdfast backup`, two things have to be in
-`holdfast.toml`: a public key to encrypt to, and a list of what to keep.
+Before the first `holdfast backup`, `holdfast.toml` needs a public key to
+encrypt to. What to keep is worked out by the rule in `auto` mode; in
+`manual` mode `--discover` writes it down first.
 
 ```sh
 age-keygen -o key.txt        # on another machine; keep key.txt off this one
@@ -235,17 +244,19 @@ The `age1...` line it prints goes into `encryption.recipients` - two of them,
 a key and a spare, is better. Then:
 
 ```sh
-holdfast backup --discover   # a draft [[component]] list
-holdfast backup --dry-run    # the exact command each artifact will run
+holdfast backup --discover   # manual mode only: write components.toml
+holdfast backup --dry-run    # what will be taken, what will not, and why
 holdfast backup
-holdfast restore verify --snapshot /opt/backups/<newest> --identity key.txt
+holdfast restore list --snapshot /opt/backups/latest
 ```
 
-`--discover` prints and never writes: paste what should be kept into
-`holdfast.toml`, crossing out the rest - including `/opt/holdfast` itself,
-which it proposes like any other directory under `/opt`. `docs/backup.md` describes the
-components, and `docs/restore.md` the rehearsal that proves a snapshot
-restores.
+Read the dry run's `not taken:` list as carefully as what it takes, and
+exclude what should not be kept with `backup.exclude`. Anything outside
+Docker - a directory on the host itself - is declared by hand as a
+`[[component]]`. `restore list` needs no key, so it runs here; `restore
+verify` and a rehearsal need the private key and therefore run on another
+machine. `docs/backup.md` describes the rule and the components, and
+`docs/restore.md` the rehearsal that proves a snapshot restores.
 
 ## Running it on a schedule
 

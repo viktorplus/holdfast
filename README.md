@@ -10,9 +10,10 @@ configuration file:
   of an intrusion, logging, and the backups themselves - and answers each with
   `PASS`, `WARN`, `FAIL` or `UNKNOWN`, together with the command that settles
   it by hand.
-- **A backup.** `holdfast backup` turns a declared list of what matters on the
-  machine - directories, PostgreSQL and MySQL databases, Docker volumes, the
-  output of any command - into one encrypted snapshot, and sends it to a
+- **A backup.** `holdfast backup` works out what matters on a Docker host -
+  or takes a declared list of it: directories, PostgreSQL and MySQL
+  databases, Docker volumes, the output of any command - and turns it into
+  one encrypted snapshot, and sends it to a
   second place with rclone. `holdfast restore` checks a snapshot and puts it
   back, in the order that works.
 
@@ -89,13 +90,19 @@ holdfast audit               # the first report
 holdfast audit --baseline    # plus what this machine would call normal
 ```
 
-Declare what to back up, and try it:
+See what the backup will take, and run it:
 
 ```sh
-holdfast backup --discover   # a draft [[component]] list to edit into holdfast.toml
-holdfast backup --dry-run    # the exact command each artifact will run
+holdfast backup --dry-run    # what is taken, what is not and why, and each command
 holdfast backup
 ```
+
+On a Docker host `holdfast init` sets `backup.mode = "auto"`: every backup
+works out what to keep from what Docker runs - databases as dumps, compose
+project directories, volumes, bind mounts - and names what it leaves out.
+Anything outside Docker is declared in `holdfast.toml` as a `[[component]]`.
+In `manual` mode, `holdfast backup --discover` writes that list to
+`components.toml` instead, and the backup keeps to it until it is run again.
 
 Backups are encrypted by default, to public keys only - the private key stays
 off the machine. Put an `age` public key in `encryption.recipients` before the
@@ -141,8 +148,12 @@ CI runs the test suite on Ubuntu with Python 3.11, 3.12 and 3.13, and runs the
 watchdog against a tampered and a clean filesystem tree. The full path - a
 backup through real `tar`, `zstd` and `age`, the copy through `rclone`,
 `verify`, a rehearsal and a restore - has been run end to end on Ubuntu 24.04
-for file components. The database and Docker-volume components are covered by
-tests of the commands they build, not yet by a run against live servers.
+for file components. The MySQL and MariaDB dumps have been run against the
+official `mysql:5.7`, `mysql:8.4`, `mariadb:10.11` and `mariadb:11` images and
+PostgreSQL's login against `postgres:13` and `postgres:16`; a MySQL database
+and an anonymous Docker volume have been restored in a disposable
+Docker setup. A PostgreSQL restore has not yet been run against a live
+server.
 
 ## Non-goals
 

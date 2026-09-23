@@ -65,10 +65,45 @@ Globals strictly before the databases their roles own: a database restored
 before its roles exist belongs to nobody.
 
 The containers to stop come from two places. A database recipe names its
-container, because the component declared one. A volume names nothing — a
-volume says nothing about who mounts it — so Docker is asked, and asked about
-stopped containers too: a stopped one will be started again, and it must not
-come back to a volume that was replaced underneath it.
+container, because the component declared one, and so does an anonymous
+volume's recipe. A named volume names nothing — a volume says nothing about
+who mounts it — so Docker is asked, and asked about stopped containers too: a
+stopped one will be started again, and it must not come back to a volume that
+was replaced underneath it.
+
+## An anonymous volume
+
+A volume compose created without a name gets a random one, and a different one
+on every machine the application is brought up on. So its recipe does not
+keep the name. It keeps the container and the path the volume is mounted at,
+and the restore asks Docker which volume that container mounts there **now**,
+and pours the data into that one - emptied first, as any volume is. Creating a
+volume under the old name would put the data where nothing reads it, and the
+site would come up empty.
+
+That question is asked before anything is stopped. With no such container, or
+no volume at that path, the restore stops there with nothing changed:
+
+```
+holdfast restore: docker-volumes/myapp-wordpress-1--var-www-html.tar.zst.age: the container 'myapp-wordpress-1' has no volume at /var/www/html; bring the application up first (docker compose up -d) and try again. Nothing has been changed.
+```
+
+On a new machine the order is therefore: put the project directory back,
+`docker compose up -d` in it, then restore the volumes and the databases. A
+named volume is restored by its name, and created if it is not there.
+
+## A MySQL database and its password
+
+A dump goes back in with the credentials it came out with. A recipe with
+`credentials = "container_env"` loads through the container's own shell and
+the variable its recipe names, exactly as the dump ran; a recipe with a
+`defaults_file` passes it to `mysqladmin` and `mysql` as the first flag. A
+restore on a new machine therefore needs the database container started with
+the same variable, or the same file at the same path inside it.
+
+The server's `mysql` schema - users and grants - is not in a dump taken by
+0.3.0 or later, so a restored database is used through the users the new
+container was started with.
 
 A container that will not stop ends the restore instead of being skipped,
 because the next step writes into files it has open.

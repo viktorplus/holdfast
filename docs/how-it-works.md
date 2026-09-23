@@ -22,9 +22,9 @@ the details.
 | `holdfast init --fresh` / `--join PROFILE` | the profile, if any | `holdfast.toml` | 0, or 1 if it could not |
 | `holdfast config check` | `holdfast.toml`, the environment | nothing | 0 complete, 1 something missing |
 | `holdfast audit` | the filesystem, `/proc`, Docker, the journal | `last.json` | 1 if any check failed, else 0 |
-| `holdfast backup --discover` | the machine; no configuration at all | nothing (prints a draft) | 0 |
-| `holdfast backup --dry-run` | `holdfast.toml` | nothing (prints the command lines) | 0, or 1 on a bad configuration |
-| `holdfast backup` | `holdfast.toml`, what the components name | a snapshot, the journal, the offsite copy | 0, or 1 on failure |
+| `holdfast backup --discover` | `holdfast.toml`, Docker | in `manual` mode `components.toml` (the old one kept as `.prev`); in `auto` mode nothing | 0, or 1 on a bad configuration |
+| `holdfast backup --dry-run` | `holdfast.toml`, Docker in `auto` mode, `components.toml` in `manual` mode | nothing (prints what is taken, what is not and why, and the command lines) | 0, or 1 on a bad configuration |
+| `holdfast backup` | the same, and what the components name | a snapshot, the journal, the offsite copy | 0, or 1 on failure |
 | `holdfast restore list` | a snapshot's manifest | nothing | 0, or 1 on an unreadable snapshot |
 | `holdfast restore verify` | a snapshot, the key | the journal | 0 all artifacts read back, 1 otherwise |
 | `holdfast restore` | a snapshot, the key | the machine, the journal | 0, or 1 on failure |
@@ -38,6 +38,7 @@ With the default configuration:
 
 ```
 /etc/holdfast/holdfast.toml           this machine's configuration, mode 0600
+/etc/holdfast/components.toml         manual mode only: what --discover found, mode 0600
 /var/lib/holdfast/audit/last.json     the last audit, and what drift is measured against
 /var/lib/holdfast/jobs/backup.json    last run and last success of each job:
                       verify.json       backup, verify, restore and the offsite copy
@@ -124,8 +125,20 @@ the second run onward.
 
 ## 3. Saying what is worth keeping
 
-A backup is declared, not built in. `holdfast.toml` lists the parts of this
-machine worth keeping as `[[component]]` tables:
+On a Docker host nobody has to write the list. With `backup.mode = "auto"`,
+which `holdfast init` writes unless told otherwise, every backup looks at what
+Docker runs and takes, by one rule: each database as a dump, each compose
+project directory whole, every volume a container mounts, and every bind
+mount outside the project directories. What it does not take - an orphaned
+volume, a database's own data directory, system paths, what the operator
+excluded in `backup.exclude` - it names, with the reason. In `manual` mode the
+same rule runs only when `holdfast backup --discover` is asked to, and writes
+what it found to `components.toml`, which later backups read as it stands.
+`docs/backup.md` has the rule, the reasons and both modes.
+
+What the rule cannot see - anything outside Docker - is declared in
+`holdfast.toml` as `[[component]]` tables, which are also how the operator
+overrides the rule for a container or a path:
 
 ```toml
 [[component]]
@@ -147,25 +160,17 @@ Five types: `path`, `postgres`, `mysql`, `docker_volume` and `command` - the
 last runs the operator's own command for anything the other four do not
 cover. `docs/backup.md` describes each, and `docs/configuration.md` their keys.
 
-Nobody has to write the list from a blank file:
-
-```sh
-holdfast backup --discover
-```
-
-prints a first draft - the database containers it recognised, a rule for the
-Docker volumes, a `path` component per directory under `/opt` - with a comment
-wherever it had to guess. It reads no configuration and writes nothing.
-
 ```sh
 holdfast backup --dry-run
 ```
 
-then prints, per artifact, the exact shell line the backup will run:
+prints, per component, where it came from, then each artifact and the exact
+shell line the backup will run, and after them what was not taken and why:
 
 ```
-shop.tar.zst.age
-  ls -d -- /opt/shop >/dev/null && tar --warning=no-file-changed --ignore-failed-read --exclude='*/cache/*' -cf - -C / opt/shop | zstd -T0 -10 -q | age --encrypt -r age1...
+shop (path, from holdfast.toml)
+  shop.tar.zst.age
+    ls -d -- /opt/shop >/dev/null && tar --warning=no-file-changed --ignore-failed-read --exclude='*/cache/*' -cf - -C / opt/shop | zstd -T0 -10 -q | age --encrypt -r age1...
 ```
 
 ## 4. Making a snapshot
@@ -179,7 +184,8 @@ A run goes in this order, and the order is the point:
 1. **Everything that can be refused is refused first**, before a byte is
    written: an encryption setting that would leave the copy readable, a
    missing `bash` or encryption tool, a component that does not make sense,
-   another backup already running, too little free disk. A backup already
+   a Docker that does not answer, another backup already running, too little
+   free disk for what the rule estimates it will take. A backup already
    running is not an error - the command says so and exits 0, because the
    nightly timer overlapping a manual run is ordinary.
 2. **Each component's artifacts are produced** into a hidden directory,

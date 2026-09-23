@@ -58,10 +58,12 @@ quietly falling back to the file the operator was overriding.
 | `encryption.tool` | `"age"` | machine file | `age` or `gpg`. Public keys only - a passphrase would have to live beside the copies it protects |
 | `encryption.recipients` | `[]` | machine file; `init --join` copies it from the profile | public keys backups are encrypted to |
 | `encryption.recipients_file` | `""` | machine file | a file with one recipient per line, added to the list above rather than replacing it |
-| `component` | `[]` | machine file, as `[[component]]` tables | what this machine keeps, in the order it is kept. `holdfast backup --discover` prints a draft. See [backup.md](backup.md) |
+| `component` | `[]` | machine file, as `[[component]]` tables | what this machine keeps by hand, in the order it is kept; in `auto` mode, on top of what the rule finds. See [backup.md](backup.md) |
+| `backup.mode` | `""` | machine file; written by `holdfast init --backup-mode`, `auto` unless told otherwise | `auto`: the rule works out what a Docker host keeps at every backup. `manual`: the backup takes `[[component]]` plus `components.toml`, which `holdfast backup --discover` writes. Empty means `manual`, the behaviour of every installation before 0.3.0 |
+| `backup.exclude` | `[]` | machine file | what the rule must not take, as `"volume:<name>"`, `"path:<absolute path>"`, `"database:<container>/<database>"` or `"container:<name>"`. Checked in both modes; a malformed entry stops the run |
 | `backup.root` | `"/opt/backups"` | machine file | where snapshots land: one directory per run, named by timestamp |
 | `backup.retention_days` | `7` | machine file | snapshots older than this many days are deleted; `0` turns rotation off. This means what it says - `backup_s1` kept them a day longer |
-| `backup.min_free_gb` | `8` | machine file | refuse to start with less than this free, before anything is written |
+| `backup.min_free_gb` | `8` | machine file | refuse to start with less than this free, before anything is written - and, in `auto` mode, refuse a run whose estimated size would leave less than this behind |
 | `backup.zstd_level` | `10` | machine file | compression level |
 | `backup.zstd_threads` | `0` | machine file | compression threads; `0` means as many as there are cores |
 | `backup.lock_file` | `"/run/holdfast-backup.lock"` | machine file | held for a run, so the nightly timer and a manual run cannot each produce a snapshot at once |
@@ -212,6 +214,10 @@ Each `[[component]]` table takes `type` and `name`, plus the keys of its type.
 `name` is lowercase letters, digits, dash and underscore: it becomes a file
 name inside the snapshot.
 
+The same tables, written by `holdfast backup --discover` in `manual` mode,
+live in `components.toml` beside `holdfast.toml`; that file is holdfast's and
+is rewritten whole on every `--discover`. See [backup.md](backup.md).
+
 | Type | Key | Default | Purpose |
 |---|---|---|---|
 | all | `type` | — | `path`, `postgres`, `mysql`, `docker_volume` or `command` |
@@ -223,12 +229,18 @@ name inside the snapshot.
 | `postgres` | `databases` | `["*"]` | `["*"]` asks the server; a list takes exactly those |
 | `postgres` | `globals` | `true` | also dump roles and tablespaces |
 | `postgres` | `defaults_file` | `""` | a libpq password file, passed as `PGPASSFILE`. holdfast never reads it |
+| `postgres` | `exclude_databases` | `[]` | databases never dumped, even with `["*"]` |
 | `mysql` | `container` | `""` | as above |
-| `mysql` | `user` | `""` | passed as `-u`; often unnecessary with a defaults file |
-| `mysql` | `databases` | `["*"]` | as above; the server's own schemas are never dumped |
+| `mysql` | `user` | `""` | passed as `-u`; often unnecessary with a defaults file. The rule sets `root` |
+| `mysql` | `databases` | `["*"]` | as above; the server's own schemas - `information_schema`, `performance_schema`, `sys`, `mysql` - are never dumped |
 | `mysql` | `defaults_file` | `""` | a my.cnf-style file the tools read themselves. holdfast never reads it |
-| `docker_volume` | `exclude` | `[]` | volume names never archived |
-| `docker_volume` | `max_mb` | `512` | volumes larger than this are left |
+| `mysql` | `credentials` | `""` | `"container_env"`: the password is the one in the container's own environment, expanded inside the container. Needs `container`; not together with `defaults_file` |
+| `mysql` | `password_env` | `""` | with `credentials`, the name of the variable holding the password, e.g. `MYSQL_ROOT_PASSWORD`; a `_FILE` name is read as a file inside the container; empty means no password |
+| `mysql` | `exclude_databases` | `[]` | databases never dumped, even with `["*"]` |
+| `docker_volume` | `volume` | `""` | one volume, by name |
+| `docker_volume` | `container`, `destination` | `""` | one volume, as the one `container` mounts at `destination` - the form for an anonymous volume, whose name is random. Not together with `volume` |
+| `docker_volume` | `exclude` | `[]` | with none of the three keys above: volume names never archived |
+| `docker_volume` | `max_mb` | `512` | with none of the three keys above: volumes larger than this are left |
 | `command` | `produce` | — | a command writing the body to stdout, used exactly as written |
 | `command` | `artifact` | `<name>.bin` | the file name inside the snapshot |
 | `command` | `check` | `cat >/dev/null` | a command reading the body on stdin, non-zero if it is unreadable |

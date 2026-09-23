@@ -1,32 +1,47 @@
 # Установка и настройка holdfast на сервере
 
 Пошаговое руководство: от входа на сервер до проверенной копии, которая
-снимается каждую ночь. Проверено на Ubuntu 24.04.
+снимается каждую ночь. Проверено на Ubuntu 24.04 с приложением в
+`docker compose`. Версия holdfast — 0.3.0.
 
 Остальная документация на английском; этот файл — подробный проход по шагам
 для тех, кому так удобнее. Справочники: `docs/how-it-works.md`,
 `docs/configuration.md`, `docs/backup.md`, `docs/restore.md`.
+
+**Как читать.** У каждого блока команд написано, где он выполняется:
+
+- **на сервере** — в SSH-сессии на сервере, от `root`;
+- **у себя** — на вашем компьютере, где лежит ключ шифрования.
+
+В примерах приложение называется `myapp`: папка проекта `/root/myapp`,
+контейнер базы `myapp-db-1`, контейнер сайта `myapp-wordpress-1`, машина
+подписывается как `web-1`. Подставьте свои имена — больше в командах менять
+ничего не нужно.
 
 ## Оглавление
 
 1. [Вход на сервер](#шаг-1-вход-на-сервер)
 2. [Что должно быть на сервере](#шаг-2-что-должно-быть-на-сервере)
 3. [Ключ шифрования](#шаг-3-ключ-шифрования)
-4. [Установка holdfast](#шаг-4-установка-holdfast)
-5. [Конфигурация машины](#шаг-5-конфигурация-машины)
+4. [Установка и обновление holdfast](#шаг-4-установка-и-обновление-holdfast)
+5. [Конфигурация машины и режим бэкапа](#шаг-5-конфигурация-машины-и-режим-бэкапа)
 6. [Публичный ключ в конфигурации](#шаг-6-публичный-ключ-в-конфигурации)
-7. [Что именно хранить](#шаг-7-что-именно-хранить)
-8. [Доступ к базе в контейнере](#шаг-8-доступ-к-базе-в-контейнере)
+7. [Что попадёт в копию](#шаг-7-что-попадёт-в-копию)
+8. [Доступ к базе](#шаг-8-доступ-к-базе)
 9. [Первый бэкап](#шаг-9-первый-бэкап)
-10. [Проверка копии на другой машине](#шаг-10-проверка-копии-на-другой-машине)
+10. [Проверка копии у себя](#шаг-10-проверка-копии-у-себя)
 11. [Расписание](#шаг-11-расписание)
 12. [Вторая копия](#шаг-12-вторая-копия-необязательно)
 13. [Первый аудит](#шаг-13-первый-аудит)
-14. [Частые ошибки](#частые-ошибки)
+14. [Режим manual](#режим-manual)
+15. [Переход с 0.2 на 0.3](#переход-с-02-на-03)
+16. [Частые ошибки](#частые-ошибки)
 
 ---
 
 ## Шаг 1. Вход на сервер
+
+**У себя:**
 
 ```sh
 ssh root@ВАШ_СЕРВЕР
@@ -40,10 +55,12 @@ ssh root@ВАШ_СЕРВЕР
 обновляйте запись:
 
 ```sh
-ssh-keygen -R ВАШ_СЕРВЕР        # убрать старую запись (сохраняется .old)
+ssh-keygen -R ВАШ_СЕРВЕР        # у себя: убрать старую запись (сохраняется .old)
 ```
 
-Дальше всё делается от `root`, из его домашней директории:
+Дальше всё на сервере делается от `root`, из его домашней директории.
+
+**На сервере:**
 
 ```sh
 whoami          # root
@@ -55,13 +72,15 @@ cd /root
 ```sh
 . /etc/os-release && echo "$PRETTY_NAME"
 df -h /                      # сколько места под копии
-docker ps                    # если приложение в контейнерах
+docker ps -a                 # какие контейнеры есть, включая остановленные
 ls -la /root /opt /srv       # где лежат данные
 ```
 
 ---
 
 ## Шаг 2. Что должно быть на сервере
+
+**На сервере:**
 
 ```sh
 apt-get update
@@ -72,12 +91,12 @@ apt-get install -y python3 python3-venv zstd age
 |---|---|---|
 | `python3` 3.11+ и `python3-venv` | сам holdfast; сторонних библиотек он не требует | да |
 | `bash` | конвейеры выполняются через него: `sh` в Ubuntu — это `dash`, он не умеет `pipefail` и не заметил бы упавшую середину конвейера | да, уже стоит |
-| `tar` | архивы файловых компонентов | да, уже стоит |
+| `tar` | архивы папок и томов | да, уже стоит |
 | `zstd` | сжатие каждого артефакта | да |
 | `age` | шифрование; альтернатива — `gpg` | да, одна из двух |
 | `docker` | только если данные живут в контейнерах | по ситуации |
 | `rclone` | только для второй копии на удалённом хранилище (шаг 12) | по ситуации |
-| клиенты БД | `mysqldump`/`mysql`, `pg_dump`/`pg_dumpall`/`psql` — если базы не в контейнерах | по ситуации |
+| клиенты БД | `mysqldump`/`mysql`, `pg_dump`/`pg_dumpall`/`psql` — только если базы **не** в контейнерах; для баз в контейнерах используются клиенты внутри контейнера | по ситуации |
 
 Проверить, что всё на месте:
 
@@ -86,6 +105,9 @@ for t in python3 bash tar zstd age docker; do
   printf '%-8s %s\n' "$t" "$(command -v $t || echo ОТСУТСТВУЕТ)"
 done
 ```
+
+Должны напечататься пути, без слова `ОТСУТСТВУЕТ` (для `docker` — если
+приложение в контейнерах).
 
 ---
 
@@ -96,19 +118,25 @@ done
 архивы, и ключ к ним. holdfast шифрует публичным ключом — серверу для работы
 нужна только публичная часть, расшифровывать он не умеет и не должен.
 
-Поэтому ключ создаётся **не на сервере**, а на вашей машине.
+Поэтому ключ создаётся **не на сервере**, а у себя.
 
-**На Linux или в WSL:**
+**У себя, на Linux или в WSL:**
 
 ```sh
 age-keygen -o ~/holdfast-age-key.txt
 ```
 
-**На Windows, если `age` не установлен, — через одноразовый контейнер:**
+**У себя, на Windows, если `age` не установлен, — через одноразовый
+контейнер** (Docker Desktop; команда одинакова для Git Bash и PowerShell):
 
 ```sh
 docker run --rm alpine:3.20 sh -c 'apk add -q age && age-keygen' > holdfast-age-key.txt
 ```
+
+> В Windows PowerShell 5.1 перенаправление `>` может записать файл не в
+> той кодировке (UTF-16 или с меткой BOM), которую ждёт `age`. Надёжнее
+> выполнить эту команду из Git Bash, или в PowerShell заменить
+> `> holdfast-age-key.txt` на `| Out-File -Encoding ascii holdfast-age-key.txt`.
 
 В файле три строки: дата, публичный ключ в комментарии и сам приватный ключ.
 
@@ -136,9 +164,9 @@ age-keygen -y holdfast-age-key.txt
 Потеря ключа означает, что копии не открыть. Восстановить его из архивов
 нельзя — это свойство шифрования, а не недоработка.
 
-> **Если ключ уже создан прямо на сервере** — заберите его и сотрите там:
+> **Если ключ уже создан прямо на сервере** — заберите его и сотрите там.
+> Всё **у себя**:
 > ```sh
-> # на своей машине
 > scp root@ВАШ_СЕРВЕР:/путь/key.txt ./holdfast-age-key.txt
 > sha256sum ./holdfast-age-key.txt                     # сверить с сервером
 > ssh root@ВАШ_СЕРВЕР 'sha256sum /путь/key.txt'
@@ -150,9 +178,11 @@ age-keygen -y holdfast-age-key.txt
 
 ---
 
-## Шаг 4. Установка holdfast
+## Шаг 4. Установка и обновление holdfast
 
-В отдельное окружение, чтобы не трогать системный Python:
+В отдельное окружение, чтобы не трогать системный Python.
+
+**На сервере:**
 
 ```sh
 cd /root
@@ -163,19 +193,39 @@ ln -s /opt/holdfast/bin/holdfast /usr/local/bin/holdfast
 holdfast version
 ```
 
-Последняя команда печатает номер версии — значит, установка удалась.
+Последняя команда печатает номер версии, `0.3.0`, — значит, установка
+удалась.
 
-Обновление позже: `git pull` в клоне и та же команда `pip install`.
+**Обновление позже**, тоже на сервере:
+
+```sh
+cd /root
+git -C holdfast pull
+/opt/holdfast/bin/pip install ./holdfast
+holdfast version
+```
+
+`pip` печатает `Successfully installed holdfast-…`, а `holdfast version` —
+новый номер. Если номер старый, обновление не встало: проверьте, что `git
+pull` действительно что-то скачал, и что вы ставили из `/root/holdfast`.
 Конфигурация и снимки лежат вне `/opt/holdfast`, обновление их не трогает.
+
+Если вы обновляетесь **с версии 0.2**, после этого шага прочитайте раздел
+[Переход с 0.2 на 0.3](#переход-с-02-на-03).
 
 ---
 
-## Шаг 5. Конфигурация машины
+## Шаг 5. Конфигурация машины и режим бэкапа
+
+**На сервере:**
 
 ```sh
-holdfast init --fresh --host-label web-1
+holdfast init --fresh --host-label web-1 --backup-mode auto
 holdfast config check
 ```
+
+Первая команда печатает `wrote /etc/holdfast/holdfast.toml`, вторая —
+`configuration is complete`.
 
 `--host-label` — имя, которым машина подписывается. Под ним её копии лежат в
 удалённом хранилище, поэтому имя должно быть уникальным среди ваших серверов.
@@ -185,23 +235,56 @@ holdfast config check
 перезаписывать уже существующий файл — второй `init` не сбросит настроенную
 машину.
 
-`config check` должен напечатать `configuration is complete`.
+**Режим бэкапа** — это ответ на вопрос «кто решает, что хранить»:
 
-> Эта проверка смотрит только на настройки установки. Она скажет «всё готово»
-> и тогда, когда бэкап запуститься не может: ни ключа, ни списка того, что
-> хранить, она не проверяет. Готовность бэкапа показывает
-> `holdfast backup --dry-run` на шаге 9.
+| Режим | Кто решает | Когда |
+|---|---|---|
+| `auto` (по умолчанию) | holdfast сам смотрит в Docker и по правилу из шага 7 решает, что брать | при каждом бэкапе заново |
+| `manual` | список пишет `holdfast backup --discover` в отдельный файл, и дальше бэкап берёт ровно его | только когда вы запускаете `--discover` |
+
+В обоих режимах к найденному добавляется то, что вы сами объявили в
+`holdfast.toml` блоками `[[component]]`. `auto` подходит почти всегда: новый
+контейнер или том попадёт в копию в ту же ночь, без вашего участия. `manual`
+нужен, когда состав копии должен меняться только после того, как человек его
+прочитал; он описан в разделе [Режим manual](#режим-manual).
+
+Режим записан в `holdfast.toml`:
+
+```sh
+grep -A1 '^\[backup\]' /etc/holdfast/holdfast.toml
+```
+
+```
+[backup]
+mode = "auto"
+```
+
+Сменить его позже — поправить эту строку на `mode = "manual"` (или обратно).
+Больше ничего менять не нужно.
+
+> `config check` смотрит только на настройки установки. Она скажет «всё
+> готово» и тогда, когда бэкап запуститься не может: ни ключа, ни состава
+> копии она не проверяет. Готовность бэкапа показывает
+> `holdfast backup --dry-run` на шаге 7.
 
 ---
 
 ## Шаг 6. Публичный ключ в конфигурации
 
-Откройте `/etc/holdfast/holdfast.toml` и впишите публичный ключ из шага 3:
+**На сервере** откройте `/etc/holdfast/holdfast.toml` (например,
+`nano /etc/holdfast/holdfast.toml`). В нём уже есть раздел `[encryption]` с
+пустым списком:
 
 ```toml
 [encryption]
-enabled = true
-tool = "age"
+recipients = []
+```
+
+Впишите в список публичный ключ из шага 3 — не добавляйте второй раздел
+`[encryption]`, а поправьте этот:
+
+```toml
+[encryption]
 recipients = ["age18vzv4xrzr6tes...ваш публичный ключ..."]
 ```
 
@@ -211,7 +294,8 @@ recipients = ["age18vzv4xrzr6tes...ваш публичный ключ..."]
 recipients = ["age1основной...", "age1запасной..."]
 ```
 
-Без этого шага бэкап остановится до первого байта:
+Шифрование включено по умолчанию, инструмент — `age`; писать это отдельно не
+нужно. Без ключа бэкап остановится до первого байта:
 
 ```
 holdfast backup: encryption is on and no recipient is configured
@@ -221,75 +305,252 @@ holdfast backup: encryption is on and no recipient is configured
 
 ---
 
-## Шаг 7. Что именно хранить
+## Шаг 7. Что попадёт в копию
 
-holdfast ничего не угадывает: он хранит то, что объявлено. Сначала спросите
-машину, что она сама предлагает:
+### Посмотреть, ничего не запуская
+
+**На сервере:**
 
 ```sh
-holdfast backup --discover
+holdfast backup --dry-run
 ```
 
-Команда ничего не пишет и ничего не меняет — печатает черновик. Прочитайте
-его и вычеркните лишнее; в частности, **вычеркните `/opt/holdfast`** — это
-сама программа.
+Команда ничего не пишет и ничего не меняет: она делает тот же выбор, что и
+настоящий бэкап, и печатает его. Код возврата 0. Для сайта на WordPress с
+MySQL в `docker compose` вывод выглядит так (длинные строки команд здесь
+сокращены до `…`; у вас они печатаются целиком):
 
-Нужные куски добавьте в конец `/etc/holdfast/holdfast.toml`. Пример для
-типичного сайта в Docker: база в контейнере, файлы в томе, описание
-приложения на диске.
+```
+mode: auto
+myapp-db-1 (mysql, from rule, ~210 MB)
+  mysql/myapp-db-1-wordpress.sql.zst.age
+    docker exec myapp-db-1 sh -c 'c=$(command -v mariadb-dump || command -v mysqldump) || { … }; export MYSQL_PWD="$MYSQL_ROOT_PASSWORD"; exec "$c" -uroot --single-transaction --quick --routines --events --databases wordpress' | zstd -T0 -10 -q | age --encrypt -r age1…
+project-myapp (path, from rule, ~210 MB)
+  project-myapp.tar.zst.age
+    ls -d -- /root/myapp >/dev/null && tar --warning=no-file-changed --ignore-failed-read --exclude=root/myapp/db_data -cf - -C / root/myapp | zstd -T0 -10 -q | age --encrypt -r age1…
+volume-myapp-wordpress-1-var-www-html (docker_volume, from rule, ~105 MB)
+  docker-volumes/myapp-wordpress-1--var-www-html.tar.zst.age
+    tar --warning=no-file-changed --ignore-failed-read -cf - -C /var/lib/docker/volumes/b2b2b2…/_data . | zstd -T0 -10 -q | age --encrypt -r age1…
+
+not taken:
+  volume a1a1a1…: no container uses it
+  bind mount /root/myapp/db_data: database data, covered by the dump
+  bind mount /root/myapp/holdfast-mysql.cnf: inside a compose project directory
+
+estimated size before compression: 525 MB
+```
+
+`a1a1a1…` и `b2b2b2…` — имена безымянных томов; у вас это строки из 64
+шестнадцатеричных символов.
+
+### Как читать вывод
+
+**`mode: auto`** — режим из шага 5.
+
+**Каждый компонент — три строки.** Первая: имя, тип, откуда он взялся и
+примерный размер. Вторая: файл, который появится в снимке (`.age` в конце —
+значит, зашифрован). Третья: точная команда, которой он будет снят. По ней
+видно опечатки в путях и именах контейнеров.
+
+Откуда компонент:
+
+| В скобках | Значит |
+|---|---|
+| `from rule` | нашло правило, по контейнерам в Docker |
+| `from holdfast.toml` | вы объявили его сами блоком `[[component]]` |
+| `from components.toml` | только в режиме `manual`: список, записанный `--discover` |
+
+Три компонента в примере:
+
+1. **`myapp-db-1` — дамп базы.** Контейнер опознан как MySQL по образу
+   (`mysql`, `mariadb`, `percona`; для PostgreSQL — `postgres`, `postgis`).
+   Дампятся все базы, кроме служебных: здесь это одна `wordpress`, а
+   `mysql`, `sys`, `information_schema` и `performance_schema` не берутся.
+   Пароль root holdfast не видит и не хранит: в команде стоит **имя**
+   переменной `$MYSQL_ROOT_PASSWORD`, и подставляет её оболочка внутри
+   контейнера — пароль не выходит из контейнера, не попадает в список
+   процессов и на диск.
+2. **`project-myapp` — папка compose-проекта целиком**: `docker-compose.yml`,
+   `.env`, всё, что лежит рядом. Папку правило узнаёт по меткам, которые
+   `docker compose` ставит на контейнеры. `--exclude=root/myapp/db_data` —
+   файлы базы из архива исключены: база уже есть в дампе, а копия файлов
+   работающей базы несогласованна и может не подняться.
+3. **`volume-myapp-wordpress-1-var-www-html` — том с файлами сайта.** Он
+   безымянный, поэтому компонент назван по контейнеру и пути, куда том
+   подключён (`/var/www/html`): имя самого тома случайное, и на другом
+   сервере оно будет другим.
+
+Размер (`~210 MB`) — грубая оценка сверху, до сжатия. У базы это размер её
+папки данных, а дамп обычно намного меньше; у проекта — вся папка, включая
+исключённые из архива данные базы. **`estimated size before compression`** —
+сумма. Если после бэкапа на диске осталось бы меньше `backup.min_free_gb`
+(по умолчанию 8 ГБ), бэкап откажется запускаться, ничего не записав.
+
+### `not taken:` — что не взято и почему
+
+Всё, что правило рассмотрело и не взяло, перечислено с причиной. Прочитайте
+этот список так же внимательно, как список взятого.
+
+| Причина | Что значит | Нужно ли что-то делать |
+|---|---|---|
+| `no container uses it` | бесхозный том: ни один контейнер, даже остановленный, его не подключает | holdfast его не удаляет; решите сами (см. ниже) |
+| `database data, covered by the dump` | папка или том, где база хранит файлы; база уже берётся дампом | нет |
+| `excluded by you` | вы исключили это в `backup.exclude` | нет |
+| `declared by hand` | это уже покрывает ваш собственный `[[component]]` в `holdfast.toml` | нет — ваш компонент главнее |
+| `system` | служебное: `/`, `/proc`, `/sys`, `/dev`, `/run`, `/var/run`, `/var/lib/docker`, `/etc/localtime`, `/etc/timezone`, любой сокет | нет |
+| `the snapshots themselves` | папка внутри `backup.root`, то есть сами снимки | нет |
+| `inside a compose project directory` | файл или папка внутри папки проекта: попадёт в копию вместе с проектом | нет |
+| `inside another bind mount already taken` | лежит внутри другой уже взятой папки | нет |
+| `not on this machine` | папки, подключённой в контейнер, нет на диске | проверить контейнер |
+| `the project directory is not on this machine` | метки говорят о папке проекта, которой на диске нет (проект перенесли или удалили) | проверить; такой проект в копию не попадает |
+
+Строки из примера:
+
+- **`volume a1a1a1…: no container uses it`** — типичный след
+  `docker compose down` и `up`: при `down` контейнеры удаляются, а их
+  безымянные тома остаются; `up` создаёт новые контейнеры с **новыми**
+  безымянными томами. Старый том с теми же данными остаётся бесхозным и
+  занимает место. Что в нём, можно посмотреть **на сервере**:
+  `docker run --rm -v ИМЯ_ТОМА:/v:ro alpine:3.20 ls -la /v`. Удалить —
+  `docker volume rm ИМЯ_ТОМА`, только когда вы уверены, что он не нужен.
+  Удаление — ваше решение, holdfast только сообщает.
+- **`bind mount /root/myapp/db_data: database data, covered by the dump`** —
+  папка данных MySQL; она же исключена из архива проекта.
+- **`bind mount /root/myapp/holdfast-mysql.cnf: inside a compose project
+  directory`** — эта строка появится, только если вы настраивали holdfast по
+  инструкции для 0.2 и подключили в контейнер базы файл с паролем. В режиме
+  `auto` он больше не нужен, а пока лежит в папке проекта — попадает в архив
+  проекта (зашифрованным). Как его убрать — в разделе
+  [Переход с 0.2 на 0.3](#переход-с-02-на-03). При новой установке этой
+  строки не будет.
+
+Внизу может быть ещё раздел **`warnings:`** — например, что рядом лежит
+`components.toml`, который в режиме `auto` не читается (см.
+[Частые ошибки](#частые-ошибки)).
+
+### Как исключить лишнее
+
+В `/etc/holdfast/holdfast.toml`, в тот же раздел `[backup]`, где стоит
+`mode` (второй `[backup]` не добавляйте):
+
+```toml
+[backup]
+mode = "auto"
+exclude = [
+  "volume:myapp_cache",
+  "path:/srv/old-site",
+  "database:myapp-db-1/wordpress_test",
+  "container:myapp-adminer-1",
+]
+```
+
+| Вид | Что исключает |
+|---|---|
+| `volume:<имя тома>` | один том: именованный или безымянный (тогда имя — 64 символа из `not taken:` или `docker volume ls`) |
+| `path:<абсолютный путь>` | папку проекта или папку, подключённую в контейнер, если она совпадает с этим путём или лежит внутри него |
+| `database:<контейнер>/<база>` | одну базу в контейнере; остальные базы этого контейнера дампятся |
+| `container:<имя контейнера>` | всё, что правило взяло бы из этого контейнера: дамп его баз, его тома (если их не подключает ещё кто-то), его подключённые папки |
+
+Два уточнения:
+
+- `path:` не вырезает подпапку из архива проекта: папка проекта либо
+  берётся целиком, либо (если сама внутри исключённого пути) не берётся.
+  Чтобы архивировать проект без какой-то подпапки, объявите его сами —
+  компонентом `path` с `exclude` (пример ниже); правило тогда напишет про
+  проект `declared by hand`.
+- `container:` не убирает папку compose-проекта этого контейнера: она
+  общая для всех сервисов проекта. Исключить её — `path:/root/myapp`.
+
+Ошибка в элементе списка (неизвестный вид, пустое значение, путь не от
+корня) останавливает бэкап и `--dry-run` с сообщением, какой элемент
+неверен, — молча он не пропускается. После правки снова запустите
+`holdfast backup --dry-run`: исключённое должно появиться в `not taken:` с
+причиной `excluded by you`.
+
+### Как добавить то, что вне Docker
+
+Правило смотрит только в Docker. Папку на самом сервере, которую ни один
+контейнер не подключает, объявите сами — в конце
+`/etc/holdfast/holdfast.toml`:
 
 ```toml
 [[component]]
-type = "mysql"
-name = "site-db"
-container = "app-db-1"
-databases = ["*"]
-defaults_file = "/etc/holdfast/mysql.cnf"
-
-[[component]]
-type = "docker_volume"
-name = "volumes"
-exclude = []
-max_mb = 512
-
-[[component]]
 type = "path"
-name = "app"
-path = "/root/myapp"
-exclude = ["*/db_data/*"]
+name = "letsencrypt"
+path = "/etc/letsencrypt"
+exclude = []
 ```
 
-Пять типов:
+`name` — строчные латинские буквы, цифры, `-` и `_`; из него получится имя
+файла в снимке. `exclude` — шаблоны `tar`, например `["*/cache/*"]`. Так же
+объявляется проект, из которого нужно вырезать подпапку:
 
-| Тип | Что забирает | Главные ключи |
-|---|---|---|
-| `path` | папку или файл как архив | `path`, `exclude` |
-| `mysql` | логические дампы, по одному на базу | `container`, `defaults_file`, `databases` |
-| `postgres` | логические дампы плюс роли | `container`, `user`, `defaults_file`, `globals` |
-| `docker_volume` | все тома меньше `max_mb` | `exclude`, `max_mb` |
-| `command` | то, что напечатает ваша команда | `produce`, `check`, `restore` |
+```toml
+[[component]]
+type = "path"
+name = "project-myapp"
+path = "/root/myapp"
+exclude = ["root/myapp/db_data", "root/myapp/logs"]
+```
+
+Объявив проект сами, вы отвечаете и за исключение папки данных базы — как в
+примере.
+
+Ещё типы — `postgres`, `mysql` и базы вне контейнеров, `docker_volume`,
+`command` для собственной команды — описаны в `docs/backup.md` и
+`docs/configuration.md`.
 
 Два правила, которые окупаются в день восстановления:
 
-1. **Базу берут дампом, а не файлами.** Копия файлов работающей базы
-   несогласованна и может не подняться. Если база кладёт файлы в папку,
-   которую вы и так архивируете как `path`, исключите эту папку — иначе вы
-   храните вторую, худшую копию тех же данных.
+1. **Базу берут дампом, а не файлами** — правило так и делает. Объявляя
+   что-то сами, не архивируйте папку данных работающей базы.
 2. **Компонент, который не смог отработать, роняет весь бэкап.** Это сделано
    нарочно: ночь без дампа базы, но с зелёным отчётом — ровно та беда, ради
    которой инструмент и существует.
 
-Полный список ключей — в `docs/configuration.md`.
+### Совет: данные приложения — папкой в проекте, а не безымянным томом
+
+В примере файлы WordPress лежат в безымянном томе — так бывает, когда в
+`docker-compose.yml` написано `- /var/www/html` без имени слева. holdfast его
+сохранит и восстановит, но у такого тома два неудобства:
+
+- после каждого `docker compose down` и `up` появляется новый том, а старый
+  остаётся бесхозным с копией тех же данных (строка `no container uses it`);
+- восстановить его на новом сервере можно только после того, как приложение
+  там уже поднято (`docker compose up -d`): holdfast кладёт данные в тот
+  том, который контейнер подключает сейчас.
+
+Папка внутри проекта (`- ./wp_data:/var/www/html`) этих проблем не имеет: она
+попадает в архив проекта, восстанавливается вместе с ним и не меняет имя
+после `down`/`up`. Для нового проекта подключайте данные так. Переделать уже
+работающий сайт — это изменение приложения, а не holdfast: делайте его
+отдельно и осознанно.
 
 ---
 
-## Шаг 8. Доступ к базе в контейнере
+## Шаг 8. Доступ к базе
 
-holdfast никогда не хранит и не передаёт пароль от базы. Он запускает
-`mysqldump` внутри контейнера, а тот читает свой собственный файл доступа.
-Такого файла в контейнере обычно нет — его нужно положить.
+**Для официальных образов `mysql`, `mariadb` и `postgres` ничего делать не
+нужно.** Правило берёт пароль из переменных окружения самого контейнера
+(`MARIADB_ROOT_PASSWORD`, `MYSQL_ROOT_PASSWORD` или их варианты `_FILE`), а
+PostgreSQL внутри контейнера пускает по локальному сокету без пароля.
+`--dry-run` на шаге 7 уже показал, что дамп будет снят.
 
-На хосте, рядом с приложением:
+Дальше — только для двух исключений:
+
+- **пароль root меняли после первого запуска контейнера.** Образ читает
+  `MYSQL_ROOT_PASSWORD` один раз, когда создаёт базу; в переменной остался
+  старый пароль, и бэкап остановится на `Access denied ... the password in
+  the container's environment was not accepted`;
+- **образ без этих переменных** (например, база запущена с
+  `MYSQL_RANDOM_ROOT_PASSWORD`, или это собственный образ). Бэкап
+  остановится на `its root password is not in its environment`.
+
+В обоих случаях нужен файл доступа, который `mysqldump` прочитает сам внутри
+контейнера. holdfast по-прежнему не хранит пароль: в его конфигурации будет
+только путь к файлу.
+
+**1. Файл** — на сервере, в папке проекта:
 
 ```sh
 cd /root/myapp
@@ -298,126 +559,268 @@ printf '[client]\nuser=root\npassword=ПАРОЛЬ_ROOT\n' > holdfast-mysql.cnf
 chmod 600 holdfast-mysql.cnf
 ```
 
-Смонтируйте его в контейнер базы. В `docker-compose.yml`, в сервис базы:
+Файл лежит в папке проекта, поэтому попадёт в архив проекта —
+зашифрованным, как и всё остальное.
 
-```yaml
-   db:
-     image: mysql:8
-     volumes:
-       - ./db_data:/var/lib/mysql
-       - ./holdfast-mysql.cnf:/etc/holdfast/mysql.cnf:ro
-```
-
-Пересоздайте только контейнер базы — перерыв в несколько секунд, данные не
-трогаются:
+**2. Подключить его в контейнер базы.** Узнайте имя сервиса базы и файл, из
+которого проект поднят (на сервере):
 
 ```sh
-docker compose up -d db
-docker exec app-db-1 mysql --defaults-file=/etc/holdfast/mysql.cnf -N -e "show databases"
+docker inspect -f '{{ index .Config.Labels "com.docker.compose.service" }}' myapp-db-1
+docker inspect -f '{{ index .Config.Labels "com.docker.compose.project.config_files" }}' myapp-db-1
 ```
 
-Последняя команда должна перечислить базы.
+Первая команда печатает имя сервиса (дальше — `db`), вторая — путь к
+compose-файлу. В этом файле, в сервис базы, добавьте строку в `volumes:`:
 
-Теперь скажите holdfast, где лежит этот файл. Откройте
-`/etc/holdfast/holdfast.toml` и в блоке `mysql` уберите `#` перед строкой
-`defaults_file` — в черновике от `--discover` она закомментирована:
+```yaml
+  db:
+    image: mysql:8.4
+    volumes:
+      - ./db_data:/var/lib/mysql
+      - ./holdfast-mysql.cnf:/etc/holdfast/mysql.cnf:ro
+```
+
+**3. Пересоздать только контейнер базы.** Из папки проекта:
+
+```sh
+cd /root/myapp
+docker compose up -d db
+```
+
+Если compose-файл называется не `compose.yaml`, `compose.yml`,
+`docker-compose.yaml` или `docker-compose.yml` (например,
+`docker-compose.prod.yml`), укажите его явно:
+
+```sh
+docker compose -f docker-compose.prod.yml up -d db
+```
+
+Что при этом происходит: compose пересоздаёт **только** контейнер `db`,
+остальные сервисы не трогаются. База недоступна несколько секунд. Данные в
+папке `./db_data` не меняются. Если данные базы у вас в томе, а не в папке,
+`up -d db` переносит в новый контейнер те же тома, включая безымянные.
+**Не используйте для этого `docker compose down`**: `down` удаляет все
+контейнеры проекта, и следующий `up` создаст новые безымянные тома вместо
+старых (см. совет в шаге 7).
+
+Проверить, что файл виден и подходит:
+
+```sh
+docker exec myapp-db-1 mysql --defaults-file=/etc/holdfast/mysql.cnf -N -e "show databases"
+```
+
+Должен напечататься список баз. В образах MariaDB 11 клиента `mysql` нет —
+там та же команда с `mariadb` вместо `mysql`.
+
+**4. Объявить базу в `holdfast.toml`** — в конце `/etc/holdfast/holdfast.toml`:
 
 ```toml
+[[component]]
+type = "mysql"
+name = "myapp-db-1"
+container = "myapp-db-1"
+databases = ["*"]
 defaults_file = "/etc/holdfast/mysql.cnf"
 ```
 
-Путь указывается **внутри контейнера**, а не на хосте. Без этой строки
-`holdfast backup --dry-run` остановится на `Access denied ... (using password: NO)`.
+Путь указывается **внутри контейнера**, а не на хосте. `holdfast backup
+--dry-run` покажет `myapp-db-1 (mysql, from holdfast.toml)` вместо `from
+rule`, а в `not taken:` — `database container myapp-db-1: declared by hand`.
+Ваш компонент главнее правила.
 
-Для PostgreSQL всё то же, только файл в формате `.pgpass`, а ключ называется
-так же — `defaults_file`.
-
-Если база не в контейнере, оставьте `container` пустым: тогда инструменты
-запускаются прямо на хосте, а `defaults_file` — обычный путь на нём.
+Для PostgreSQL файл нужен, только если локальный вход без пароля в
+контейнере отключён; это файл в формате `.pgpass`, ключ тот же —
+`defaults_file`, плюс обязательный `user`. Если база не в контейнере,
+оставьте `container` пустым: тогда инструменты запускаются прямо на хосте, а
+`defaults_file` — обычный путь на нём.
 
 ---
 
 ## Шаг 9. Первый бэкап
 
-Сначала посмотреть, что получится, ничего не запуская:
+**На сервере.** Ещё раз посмотрите, что будет взято, и запустите:
 
 ```sh
 holdfast backup --dry-run
-```
-
-Печатается точная команда для каждого артефакта. Здесь видно опечатки в путях
-и именах контейнеров.
-
-Затем сам бэкап:
-
-```sh
 holdfast backup
 ```
 
-Результат — строка вида:
+`holdfast backup` печатает строку со снимком, а под ней — всё, что не
+взято, с теми же причинами, что и в `--dry-run`:
 
 ```
-/opt/backups/20260922-211254 (31616210 bytes in 4 artifacts)
+/opt/backups/20260923-021500 (31616210 bytes in 3 artifacts)
+skipped volume a1a1a1…: no container uses it
+skipped bind mount /root/myapp/db_data: database data, covered by the dump
+skipped bind mount /root/myapp/holdfast-mysql.cnf: inside a compose project directory
 ```
 
-Что появилось на диске:
+Код возврата 0. Предупреждения, если есть, печатаются в stderr с префиксом
+`holdfast backup:`.
+
+Что в снимке — **без ключа**, прямо на сервере:
 
 ```sh
-ls -lh /opt/backups/*/
+holdfast restore list --snapshot /opt/backups/latest
+```
+
+```
+snapshot 20260923-021500 from web-1
+taken 2026-09-23T02:15:00.412345+00:00, encrypted with age
+
+       1234567  myapp-db-1       mysql_database   mysql/myapp-db-1-wordpress.sql.zst.age
+      25000000  project-myapp    path             project-myapp.tar.zst.age
+       6000000  volume-myapp-wordpress-1-var-www-html docker_volume    docker-volumes/myapp-wordpress-1--var-www-html.tar.zst.age
+```
+
+(размеры и время у вас свои.) Колонки: размер в байтах, компонент, способ
+восстановления, файл. Три артефакта — три строки.
+
+Что ещё появилось на диске:
+
+```sh
+ls -lh /opt/backups/latest/
 cat /var/lib/holdfast/jobs/backup.json
 ```
 
 В снимке лежат зашифрованные артефакты, `manifest.json` (открытым текстом —
-он описывает снимок и нужен в день восстановления) и `SHA256SUMS`.
+он описывает снимок и нужен в день восстановления; в нём же раздел
+`skipped` — что не взято и почему) и `SHA256SUMS`. `backup.json` — журнал:
+последний запуск и последний успешный.
 
 ---
 
-## Шаг 10. Проверка копии на другой машине
+## Шаг 10. Проверка копии у себя
 
 Бэкап, из которого никто не восстанавливался, — это надежда, а не копия.
 Ключа на сервере нет и быть не должно, поэтому проверка делается **у вас**.
 
-Скачайте снимок **к себе**, на машину с ключом. Сначала узнайте на сервере имя
-свежего снимка — это папка, на которую указывает `latest`:
+### Скачать снимок
+
+**На сервере** узнайте имя свежего снимка — это папка, на которую указывает
+`latest`:
 
 ```sh
 readlink /opt/backups/latest
 ```
 
-Затем у себя подставьте это имя вместо `20260922-211254`:
+Печатается полный путь, например `/opt/backups/20260923-021500`.
+
+**У себя** создайте рабочую папку и скачайте снимок, подставив это имя
+вместо `20260923-021500`. Команды одинаковы в Git Bash и PowerShell:
 
 ```sh
-scp -r root@ВАШ_СЕРВЕР:/opt/backups/20260922-211254 ./snap
+mkdir holdfast-check
+cd holdfast-check
+scp -r root@ВАШ_СЕРВЕР:/opt/backups/20260923-021500 ./snap
 ```
 
 Папку `./snap` заранее создавать не нужно: её создаёт `scp`, и в ней сразу
 лежат `manifest.json` и артефакты. Если `./snap` уже была, `scp` положит
-снимок внутрь, в `./snap/20260922-211254`, — тогда в `--snapshot` указывайте
-этот путь.
+снимок внутрь, в `./snap/20260923-021500`, — тогда удалите её и скачайте
+заново.
 
-На машине с ключом (там же должны быть установлены holdfast, `zstd` и `age`):
+### Linux или WSL
+
+Нужны `zstd`, `age`, Python 3.11+ и holdfast той же версии, что на сервере.
+**У себя**, в папке `holdfast-check`:
 
 ```sh
-holdfast restore list   --snapshot ./snap
-holdfast restore verify --snapshot ./snap --identity ./holdfast-age-key.txt
+sudo apt-get install -y python3 python3-venv zstd age
+git clone https://github.com/viktorplus/holdfast.git
+python3 -m venv ./venv
+./venv/bin/pip install ./holdfast
+sudo ./venv/bin/holdfast restore list   --snapshot ./snap
+sudo ./venv/bin/holdfast restore verify --snapshot ./snap --identity ~/holdfast-age-key.txt
 ```
+
+`sudo` нужен потому, что `verify` и восстановление записывают результат в
+журнал `/var/lib/holdfast/jobs/`, куда обычный пользователь писать не может.
 
 - `list` работает вообще без ключа и показывает состав снимка;
 - `verify` расшифровывает каждый артефакт и проверяет его формат: должно быть
-  `checked N artifacts` и код возврата 0.
+  `checked 3 artifacts in 20260923-021500` и код возврата 0.
 
-Репетиция восстановления файлов в пустую папку:
+Репетиция восстановления папки проекта в пустую папку:
 
 ```sh
-holdfast restore --snapshot ./snap --identity ./holdfast-age-key.txt \
-  --root /tmp/drill --component app --yes --no-stop --from-other-host
+sudo ./venv/bin/holdfast restore --snapshot ./snap --identity ~/holdfast-age-key.txt \
+  --root /tmp/drill --component project-myapp --yes --no-stop --from-other-host
+ls -la /tmp/drill/root/myapp
 ```
 
-`app` — имя файлового компонента (`type = "path"`) из шага 7; подставьте имя
-своего. `--root` переносит только файловые компоненты: тому и базе некуда лечь, кроме
-живых, поэтому holdfast откажется, если в область попал том или база.
-`--from-other-host` нужен потому, что проверка идёт не на той машине, где
-снимался снимок.
+Должно напечататься `restored 1 artifacts from 20260923-021500`, а в
+`/tmp/drill/root/myapp` — файлы проекта (без `db_data`). Строка `This will
+OVERWRITE live data` в начале вывода — стандартное предупреждение; с
+`--root /tmp/drill` файлы ложатся только в `/tmp/drill`.
+
+### Windows: одноразовый контейнер `ubuntu:24.04`
+
+Если holdfast у себя ставить не хочется или вы на Windows, всё делает
+одноразовый контейнер в Docker Desktop. Он ставит в себя `zstd`, `age` и
+holdfast, проверяет снимок и удаляется (`--rm`). Ключ подключается **только
+для чтения** и никуда не копируется.
+
+**У себя**, в папке `holdfast-check`, где уже лежит `snap`, скачайте
+исходники holdfast (если клон уже был — `git -C holdfast pull`):
+
+```sh
+git clone https://github.com/viktorplus/holdfast.git
+```
+
+**Git Bash.** Поправьте путь к ключу в первой строке — в виде `C:/...`, с
+прямыми слешами:
+
+```sh
+KEY='C:/Users/ИМЯ/holdfast-age-key.txt'
+MSYS_NO_PATHCONV=1 docker run --rm -e DEBIAN_FRONTEND=noninteractive \
+  -v "$(pwd -W)/snap:/snap:ro" \
+  -v "$(pwd -W)/holdfast:/src:ro" \
+  -v "$KEY:/key.txt:ro" \
+  ubuntu:24.04 bash -c 'apt-get update -qq && apt-get install -y -qq python3 python3-venv zstd age >/dev/null && cp -r /src /tmp/holdfast && python3 -m venv /opt/hf && /opt/hf/bin/pip install -q /tmp/holdfast && /opt/hf/bin/holdfast version && /opt/hf/bin/holdfast restore list --snapshot /snap && /opt/hf/bin/holdfast restore verify --snapshot /snap --identity /key.txt && /opt/hf/bin/holdfast restore --snapshot /snap --identity /key.txt --root /tmp/drill --component project-myapp --yes --no-stop --from-other-host && ls -la /tmp/drill/root/myapp'
+```
+
+`MSYS_NO_PATHCONV=1` нужен, чтобы Git Bash не превращал пути внутри
+контейнера (`/snap`, `/key.txt`) в пути Windows. `pwd -W` печатает текущую
+папку в виде `C:/...`, который понимает Docker Desktop.
+
+**PowerShell.** Поправьте путь к ключу в первой строке:
+
+```powershell
+$key = "C:\Users\ИМЯ\holdfast-age-key.txt"
+docker run --rm -e DEBIAN_FRONTEND=noninteractive `
+  -v "${PWD}\snap:/snap:ro" `
+  -v "${PWD}\holdfast:/src:ro" `
+  -v "${key}:/key.txt:ro" `
+  ubuntu:24.04 bash -c 'apt-get update -qq && apt-get install -y -qq python3 python3-venv zstd age >/dev/null && cp -r /src /tmp/holdfast && python3 -m venv /opt/hf && /opt/hf/bin/pip install -q /tmp/holdfast && /opt/hf/bin/holdfast version && /opt/hf/bin/holdfast restore list --snapshot /snap && /opt/hf/bin/holdfast restore verify --snapshot /snap --identity /key.txt && /opt/hf/bin/holdfast restore --snapshot /snap --identity /key.txt --root /tmp/drill --component project-myapp --yes --no-stop --from-other-host && ls -la /tmp/drill/root/myapp'
+```
+
+Внутри контейнера команда одна и та же. Исходники копируются из `/src` в
+`/tmp/holdfast` перед установкой, потому что `/src` подключена только для
+чтения, а `pip` пишет рядом с исходниками служебные файлы сборки.
+
+Что должно напечататься, по порядку (установка пакетов занимает минуту-две и
+почти ничего не печатает):
+
+1. `0.3.0` — версия holdfast;
+2. состав снимка, как `restore list` на шаге 9;
+3. `checked 3 artifacts in 20260923-021500`;
+4. план восстановления и `restored 1 artifacts from 20260923-021500`;
+5. список файлов проекта из `/tmp/drill/root/myapp`.
+
+Цепочка идёт через `&&`: если что-то не прошло, команда останавливается на
+этом месте с сообщением `holdfast restore: ...`. После выхода контейнер
+удаляется вместе со всем, что в нём было, включая восстановленные файлы;
+папки `snap` и `holdfast` и ключ на вашем диске не меняются.
+
+### Что проверка не покрывает
+
+`--root` переносит только файловые компоненты. Том и базу репетировать так
+нельзя: им некуда лечь, кроме живых, поэтому holdfast откажется, если в
+область попал том или база. Их формат проверяет `verify`; настоящее
+восстановление — в `docs/restore.md`. `--from-other-host` нужен потому, что
+проверка идёт не на той машине, где снимался снимок.
 
 > Проверка сторожа `restore_tested` читает журнал **той машины, где её
 > запускают**. Если репетиция проходит у вас, на сервере эта проверка
@@ -425,13 +828,16 @@ holdfast restore --snapshot ./snap --identity ./holdfast-age-key.txt \
 > получить только с ключом на сервере, а класть его туда нельзя.
 
 Порядок настоящего восстановления и что происходит при обрыве на середине —
-в `docs/restore.md`.
+в `docs/restore.md`. Коротко про безымянный том: на новом сервере сначала
+поднимите приложение (`docker compose up -d` в папке проекта), потом
+восстанавливайте — данные лягут в том, который контейнер подключает сейчас.
 
 ---
 
 ## Шаг 11. Расписание
 
-Своего планировщика у holdfast нет. Создайте `/etc/cron.d/holdfast`:
+Своего планировщика у holdfast нет. **На сервере** создайте
+`/etc/cron.d/holdfast`:
 
 ```
 SHELL=/bin/bash
@@ -447,6 +853,8 @@ PATH=/usr/local/bin:/usr/bin:/bin
 chmod 644 /etc/cron.d/holdfast
 systemctl is-active cron
 ```
+
+Должно напечататься `active`.
 
 Коды возврата, на которые смотрит любой монитор:
 
@@ -465,12 +873,15 @@ systemctl is-active cron
 
 Снимок, который лежит только на самом сервере, исчезает вместе с ним.
 
+**На сервере:**
+
 ```sh
 apt-get install -y rclone
 rclone config          # диалог: имя хранилища, тип, доступы
 ```
 
-Затем в `/etc/holdfast/holdfast.toml`:
+Затем в `/etc/holdfast/holdfast.toml` — в уже существующий раздел
+`[offsite]`, поправив строку `remote`:
 
 ```toml
 [offsite]
@@ -479,7 +890,7 @@ timeout_minutes = 120
 ```
 
 Копия уходит после того, как снимок полностью готов, и ложится в папку с
-именем машины: `shared:backups/web-1/20260922-211254/`. holdfast проверяет,
+именем машины: `shared:backups/web-1/20260923-021500/`. holdfast проверяет,
 что все файлы долетели, и **никогда ничего не удаляет на удалённой стороне** —
 учётной записи хранилища хватает прав на запись и просмотр.
 
@@ -490,6 +901,8 @@ timeout_minutes = 120
 ---
 
 ## Шаг 13. Первый аудит
+
+**На сервере:**
 
 ```sh
 holdfast audit
@@ -517,10 +930,186 @@ holdfast audit --baseline
 
 ---
 
+## Режим manual
+
+В режиме `manual` бэкап не смотрит в Docker. Он берёт компоненты из
+`holdfast.toml` и из `/etc/holdfast/components.toml` — списка, который пишет
+`holdfast backup --discover`. Состав копии меняется только тогда, когда вы
+запускаете `--discover`.
+
+Включить — при установке `holdfast init --fresh --host-label web-1
+--backup-mode manual`, или позже строкой `mode = "manual"` в разделе
+`[backup]`.
+
+**На сервере:**
+
+```sh
+holdfast backup --discover
+```
+
+```
+wrote /etc/holdfast/components.toml (3 components)
+
+changes:
+  + myapp-db-1 (mysql)
+  + project-myapp (path)
+  + volume-myapp-wordpress-1-var-www-html (docker_volume)
+
+not taken:
+  volume a1a1a1…: no container uses it
+  bind mount /root/myapp/db_data: database data, covered by the dump
+```
+
+- `--discover` применяет то же правило, что и режим `auto`, учитывая
+  `backup.exclude` и ваши `[[component]]`;
+- файл записывается целиком, с правами `0600`; прежний сохраняется рядом как
+  `components.toml.prev` — если новый список что-то потерял, прежний можно
+  посмотреть;
+- `changes:` — что добавилось (`+`), ушло (`-`) или изменилось (`~`) по
+  сравнению с прежним файлом; если ничего — `no changes`;
+- `not taken:` — то же, что в `--dry-run` (шаг 7).
+
+**Файл не редактируйте**: следующий `--discover` перезапишет его целиком, о
+чём сказано в его первой строке. Свои компоненты и исключения пишите в
+`holdfast.toml`.
+
+Бэкап читает `components.toml`, только если его первая строка — та, что
+пишет `--discover`. Файл без неё (например, черновик, сохранённый по
+инструкции для 0.2) не читается, а `--dry-run` и бэкап предупреждают об этом.
+
+`holdfast backup --dry-run` в этом режиме показывает компоненты с пометкой
+`from components.toml`.
+
+**Когда запускать `--discover` снова:** после того как на сервере появился
+или исчез контейнер, compose-проект, именованный том или подключённая папка.
+Не нужно после `docker compose down`/`up`: безымянный том записан через
+контейнер и путь, а не по имени, и бэкап найдёт новый том сам; новые базы в
+уже известном контейнере тоже берутся сами (список баз спрашивается у
+сервера при каждом бэкапе).
+
+В режиме `auto` `--discover` ничего не пишет и отвечает:
+
+```
+backup.mode is "auto": what is kept is worked out again at every backup, so there is nothing to write down. `holdfast backup --dry-run` shows what the next run takes.
+```
+
+---
+
+## Переход с 0.2 на 0.3
+
+Всё — **на сервере**.
+
+**1. Обновить программу** — как в шаге 4:
+
+```sh
+cd /root
+git -C holdfast pull
+/opt/holdfast/bin/pip install ./holdfast
+holdfast version
+```
+
+Должно быть `0.3.0`. Сразу после обновления поведение прежнее: в
+конфигурации 0.2 нет `backup.mode`, и это значит `manual` — бэкап берёт
+ровно ваши `[[component]]`, в Docker не смотрит. Две вещи в 0.3 работают
+иначе и сразу: служебная база `mysql` (пользователи и права сервера) больше
+не дампится, а восстановление MySQL использует тот же `defaults_file`, что и
+дамп.
+
+**2. Сохранить конфигурацию**, прежде чем править:
+
+```sh
+cp -p /etc/holdfast/holdfast.toml /etc/holdfast/holdfast.toml.bak
+```
+
+**3. Включить `auto`.** Проверьте, есть ли уже раздел `[backup]`:
+
+```sh
+grep -n '^\[backup\]' /etc/holdfast/holdfast.toml
+```
+
+Если строка нашлась — допишите под ней `mode = "auto"`. Если нет — добавьте
+в конец файла:
+
+```toml
+[backup]
+mode = "auto"
+```
+
+**4. Убрать старые `[[component]]`, которые теперь покрывает правило.** По
+инструкции для 0.2 это обычно три блока:
+
+- `type = "mysql"` для контейнера базы с `defaults_file` — правило снимает
+  дамп с паролем из окружения контейнера. Оставьте этот блок, только если
+  ваш случай — исключение из шага 8 (пароль меняли после первого запуска);
+- `type = "docker_volume"` с `exclude` и `max_mb` — брал все тома подряд,
+  включая бесхозные дубли; правило берёт только подключённые тома;
+- `type = "path"` для папки проекта (`/root/myapp`) — правило берёт её само,
+  с исключением папки данных базы.
+
+Блоки `path` для папок **вне** Docker (например, `/etc/letsencrypt`)
+оставьте: их правило не видит. Блоки для `/opt/holdfast` (сама программа) и
+`/opt/containerd` (служебное Docker), если черновик 0.2 их предложил, просто
+удалите.
+
+**5. Проверить:**
+
+```sh
+holdfast config check
+holdfast backup --dry-run
+```
+
+`configuration is complete`, затем `mode: auto` и разбор, как в шаге 7.
+Сравните список со старым: всё, что вы хранили раньше, должно быть либо
+взято, либо стоять в `not taken:` с понятной вам причиной. Что пошло не
+так — вернуть прежнее: `cp -p /etc/holdfast/holdfast.toml.bak
+/etc/holdfast/holdfast.toml`.
+
+**6. Старый черновик `components.toml`.** Если по инструкции для 0.2 вы
+сохраняли вывод `--discover` в `/etc/holdfast/components.toml`, `--dry-run`
+предупредит:
+
+```
+warnings:
+  /etc/holdfast/components.toml is not read in auto mode; delete it, or set backup.mode = "manual" to use it
+```
+
+Убедитесь, что всё нужное из него уже в `holdfast.toml` или найдено
+правилом, и удалите:
+
+```sh
+rm /etc/holdfast/components.toml
+```
+
+**7. Файл с паролем для базы (необязательно).** По инструкции для 0.2 в
+контейнер базы подключался `holdfast-mysql.cnf`. В режиме `auto` он не
+нужен; `--dry-run` показывает его в `not taken:` как `inside a compose
+project directory` — то есть он попадает в архив проекта, зашифрованным.
+Можно оставить как есть. Если хотите убрать — только когда блока `mysql` с
+`defaults_file` в `holdfast.toml` уже нет (пункт 4), иначе бэкап перестанет
+находить файл. По порядку:
+
+1. в compose-файле, в сервисе базы, удалите строку
+   `- ./holdfast-mysql.cnf:/etc/holdfast/mysql.cnf:ro`;
+2. пересоздайте **только** контейнер базы — из папки проекта,
+   `cd /root/myapp && docker compose up -d db` (с `-f <файл>`, если
+   compose-файл назван иначе; имя сервиса и файл — командами из шага 8).
+   Остальные контейнеры не трогаются, данные в `./db_data` не меняются, база
+   недоступна несколько секунд. Не `down`/`up`;
+3. `holdfast backup --dry-run` — дамп по-прежнему `from rule`, а строки про
+   `holdfast-mysql.cnf` в `not taken:` больше нет;
+4. удалите файл: `rm /root/myapp/holdfast-mysql.cnf`.
+
+**8. Первый бэкап на новой версии** — как в шаге 9, и проверка у себя — как
+в шаге 10. Восстанавливать снимки 0.3 нужно holdfast 0.3.
+
+---
+
 ## Что где лежит
 
 ```
 /etc/holdfast/holdfast.toml          конфигурация машины, права 0600
+/etc/holdfast/components.toml        только в режиме manual: список от --discover
+/etc/holdfast/components.toml.prev   предыдущий такой список
 /opt/holdfast/                       сама программа
 /opt/backups/<дата-время>/           снимки
 /opt/backups/latest                  ссылка на последний
@@ -536,12 +1125,23 @@ holdfast audit --baseline
 
 ## Частые ошибки
 
+Все сообщения начинаются с имени команды, например `holdfast backup: ...`.
+
 | Сообщение | Причина | Что делать |
 |---|---|---|
 | `encryption is on and no recipient is configured` | пуст `encryption.recipients` | шаг 6 |
-| `nothing to back up: no [[component]] produced an artifact` | не объявлено ни одного компонента | шаг 7 |
+| `backup.mode is '...'; it is either "auto" or "manual"` | опечатка в `mode` | поправить строку в `[backup]` |
+| `backup.exclude: '...' is not one of volume:<...>, path:<...>, database:<...>, container:<...>` | неверный элемент `exclude` | шаг 7, «Как исключить лишнее» |
+| `container 'myapp-db-1': its root password is not in its environment, so holdfast cannot reach the database; ...` | у контейнера базы нет переменной с паролем root | шаг 8; или исключить: `"container:myapp-db-1"` |
+| `... Access denied ... - the password in the container's environment was not accepted; ...` | пароль root меняли после первого запуска контейнера | шаг 8: `defaults_file` |
+| `... Access denied ... - this component has no defaults_file, so mysql ran without a password; ...` | вы объявили `mysql` сами, без `defaults_file` | добавить `defaults_file` (шаг 8) или удалить блок — тогда базу возьмёт правило |
+| `component 'myapp-db-1': the container 'myapp-db-1' is not running, so there is nothing to dump` | контейнер базы остановлен | запустить его, или исключить: `"container:myapp-db-1"` |
+| `this snapshot is estimated at up to N MB before compression, /opt/backups has X GB free, and backup.min_free_gb asks for 8 to be left` | места после бэкапа осталось бы меньше порога | освободить место, исключить лишнее (шаг 7) или уменьшить `backup.min_free_gb` |
+| `... has no volume at /var/www/html; bring the application up first (docker compose up -d) and try again` | при восстановлении безымянного тома контейнера ещё нет | поднять приложение в папке проекта (`docker compose up -d`), повторить восстановление |
+| `/etc/holdfast/components.toml is not read in auto mode; ...` | в режиме `auto` остался файл от `manual` или 0.2 | удалить файл, если он не нужен (раздел «Переход с 0.2») |
+| `/etc/holdfast/components.toml was not written by holdfast backup --discover, so it is ignored; ...` | в режиме `manual` лежит черновик 0.2 | перенести нужное в `holdfast.toml` и удалить файл, или запустить `--discover` |
+| `nothing to back up: no [[component]] produced an artifact` | ни правило, ни вы не дали ни одного компонента | `holdfast backup --dry-run`: что в `not taken:`; в `manual` — запустить `--discover` |
 | `component 'app' failed with exit 2`, выше `ls: cannot access ...` | в компоненте `path` указана несуществующая папка | поправить путь |
-| ошибка на компоненте базы | `mysqldump` не смог войти | проверить файл доступа **внутри** контейнера (шаг 8) |
 | `there is no bash on PATH` | системы без bash | holdfast рассчитан на Linux с systemd |
 | `this snapshot was taken on 'web-1', and this machine is 'web-2'` | восстановление не на той машине | если так и задумано — `--from-other-host` |
 | `--root moves only files, and ... would go into the live volumes` | репетиция захватила том или базу | сузить: `--component <файловый компонент>` |
@@ -553,4 +1153,6 @@ holdfast audit --baseline
 
 - оповещений: `alerts.chat_id` в конфигурации есть, но его никто не читает;
 - своего планировщика — только cron или systemd-таймер;
-- веб-интерфейса и HTTP API: `api.token` создаётся, но не используется.
+- веб-интерфейса и HTTP API: `api.token` создаётся, но не используется;
+- баз вне Docker в режиме `auto`: их объявляют сами (`docs/backup.md`);
+- MongoDB, Redis и других СУБД — только через компонент `command`.
