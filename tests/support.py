@@ -144,3 +144,71 @@ class SnapshotProbe:
 
     def volume_mountpoint(self, name: str) -> str:
         return self.mountpoints[name]
+
+
+# --------------------------------------------------------------------------
+# fixtures shaped like `docker inspect`, for the auto-discovery tests
+# --------------------------------------------------------------------------
+
+# 64 hex characters, the way Docker names an unnamed volume.
+WP_VOLUME = "a1" * 32
+ORPHAN_VOLUME = "b2" * 32
+
+
+def inspect_entry(
+    name: str,
+    image: str,
+    *,
+    running: bool = True,
+    project: str = "",
+    working_dir: str = "",
+    mounts=(),
+    env=(),
+) -> dict:
+    """One element of the list `docker inspect` prints."""
+    labels = {}
+    if project:
+        labels["com.docker.compose.project"] = project
+    if working_dir:
+        labels["com.docker.compose.project.working_dir"] = working_dir
+    return {
+        "Name": f"/{name}",
+        "Config": {"Image": image, "Labels": labels, "Env": list(env)},
+        "State": {"Running": running},
+        "Mounts": list(mounts),
+    }
+
+
+def volume_mount(name: str, destination: str) -> dict:
+    return {
+        "Type": "volume",
+        "Name": name,
+        "Source": f"/var/lib/docker/volumes/{name}/_data",
+        "Destination": destination,
+    }
+
+
+def bind_mount(source: str, destination: str) -> dict:
+    return {"Type": "bind", "Source": source, "Destination": destination}
+
+
+def wordpress_site() -> list[dict]:
+    """Two containers of one compose project, shaped like a real WordPress site."""
+    return [
+        inspect_entry(
+            "myapp-db-1",
+            "mysql:5.7",
+            project="myapp",
+            working_dir="/root/myapp",
+            mounts=[bind_mount("/root/myapp/db_data", "/var/lib/mysql")],
+            env=["MYSQL_ROOT_PASSWORD=secret-value", "MYSQL_DATABASE=wordpress"],
+        ),
+        inspect_entry(
+            "myapp-wordpress-1",
+            "wordpress:latest",
+            project="myapp",
+            working_dir="/root/myapp",
+            mounts=[volume_mount(WP_VOLUME, "/var/www/html")],
+            env=["WORDPRESS_DB_PASSWORD=secret-value"],
+        ),
+    ]

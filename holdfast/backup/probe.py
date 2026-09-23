@@ -20,11 +20,13 @@ artifact, built by the engine, and nothing else.
 
 from __future__ import annotations
 
+import json
 import math
 import os
 import subprocess
 from collections.abc import Mapping
 
+from .machine import Container, parse_inspect
 from .model import BackupError
 
 
@@ -154,3 +156,49 @@ class Probe:
                 except OSError:
                     continue
         return math.ceil(total / (1024 * 1024))
+
+    def inspect_containers(self) -> list[Container]:
+        """Every container Docker knows about, running or not, in one picture.
+
+        Two calls because `docker inspect` takes ids, not a filter: first
+        `docker ps -aq` to get them, then one `inspect` for all of them
+        together, so the machine cannot change its mind between one
+        container's picture and the next. An empty listing skips the second
+        call rather than asking `docker inspect` for nothing.
+        """
+        listed = self.capture(
+            ["docker", "ps", "-aq"], what="listing the containers", timeout=30
+        )
+        ids = [line.strip() for line in listed.splitlines() if line.strip()]
+        if not ids:
+            return []
+        text = self.capture(
+            ["docker", "inspect", *ids],
+            what="inspecting the containers",
+            timeout=60,
+        )
+        return parse_inspect(text)
+
+    def mounted_volume(self, container: str, destination: str) -> str:
+        """The name of the volume a container has mounted at `destination`.
+
+        Used where a component names a container and a path inside it rather
+        than a volume name directly, so that renaming a volume in a compose
+        file does not also require editing the backup configuration.
+        """
+        text = self.capture(
+            ["docker", "inspect", "--format", "{{json .Mounts}}", container],
+            what=f"inspecting the mounts of {container!r}",
+            timeout=30,
+        )
+        mounts = json.loads(text) if text else []
+        for mount in mounts:
+            if (
+                mount.get("Type") == "volume"
+                and mount.get("Destination") == destination
+            ):
+                return mount.get("Name", "")
+        raise BackupError(
+            f"the container {container!r} has no volume at {destination}; "
+            "bring the application up first (docker compose up -d) and try again"
+        )
