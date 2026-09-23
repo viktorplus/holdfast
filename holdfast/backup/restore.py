@@ -17,7 +17,7 @@ from typing import Any
 from .. import jobs
 from .components.mysql import CONTAINER_ENV, in_container
 from .decrypt import Identity, Run
-from .model import RestoreError
+from .model import BackupError, RestoreError
 from .services import Services, owners
 from .snapshot import Record, Snapshot
 
@@ -174,6 +174,7 @@ def restore(
                 "Nothing has been changed."
             )
     identity.probe(chosen, run)
+    volumes = _anonymous_volumes(chosen, probe)
 
     ordered = _in_order(chosen)
     _announce(snapshot, ordered, root, component, dry_run, say)
@@ -198,6 +199,7 @@ def restore(
             pg_user,
             dry_run,
             done,
+            volumes,
         )
         services.start()
         _carry_out(
@@ -210,6 +212,7 @@ def restore(
             pg_user,
             dry_run,
             done,
+            volumes,
         )
     # Anything at all, an interrupt included: whatever stopped the recipes,
     # the containers stopped above must not stay down because of it.
@@ -276,6 +279,37 @@ def _rebasable(records: list[Record], root: str) -> None:
         )
 
 
+COMPOSE_HINT = "bring the application up first (docker compose up -d) and try again"
+
+
+def _anonymous_volumes(records: list[Record], probe) -> dict[str, str]:
+    """The volume each unnamed-volume recipe goes into, found before anything
+    is stopped.
+
+    The container has to exist and mount a volume there, and the usual reason
+    it does not is that the application has not been brought up on this
+    machine yet. Asked once here, the answer is handed to the recipe rather
+    than asked again with the services down.
+    """
+    found: dict[str, str] = {}
+    for record in records:
+        container = str(record.recipe.get("container") or "")
+        if record.kind != "docker_volume" or not container:
+            continue
+        try:
+            found[record.path] = probe.mounted_volume(
+                container, str(record.recipe["destination"])
+            )
+        except BackupError as exc:
+            # docker inspect's own error for a missing container does not say
+            # what to do about it.
+            hint = "" if COMPOSE_HINT in str(exc) else f"; {COMPOSE_HINT}"
+            raise RestoreError(
+                f"{record.path}: {exc}{hint}. Nothing has been changed."
+            ) from None
+    return found
+
+
 def _in_order(records: list[Record]) -> list[Record]:
     phase = {kind: i for i, kind in enumerate((*BEFORE, *AFTER))}
     return sorted(records, key=lambda r: phase.get(r.kind, len(phase)))
@@ -329,9 +363,13 @@ def _carry_out(
     pg_user: str | None,
     dry_run: bool,
     done: list[str],
+    volumes: dict[str, str],
 ) -> None:
     for record in records:
-        for line in _lines_for(record, identity, probe, root, pg_container, pg_user):
+        lines = _lines_for(
+            record, identity, probe, root, pg_container, pg_user, volumes
+        )
+        for line in lines:
             if dry_run:
                 continue
             if run(line) != 0:
@@ -346,13 +384,14 @@ def _lines_for(
     root: str,
     pg_container: str | None,
     pg_user: str | None,
+    volumes: dict[str, str],
 ) -> list[str]:
     body = identity.stream(record.file)
     recipe = record.recipe
     if record.kind == "path":
         return _path_lines(body, str(recipe.get("target") or "/"), root)
     if record.kind == "docker_volume":
-        return _volume_lines(body, recipe, probe)
+        return _volume_lines(body, recipe, probe, volumes.get(record.path, ""))
     container = pg_container or str(recipe.get("container") or "")
     if record.kind == "pg_globals":
         user = pg_user or str(recipe.get("user") or "")
@@ -387,14 +426,16 @@ def _path_lines(body: str, target: str, root: str) -> list[str]:
     return [f"mkdir -p -- {dest} && {body} | zstd -dc | tar -xf - -C {dest}"]
 
 
-def _volume_lines(body: str, recipe: dict[str, Any], probe) -> list[str]:
-    container = str(recipe.get("container") or "")
-    if container:
+def _volume_lines(
+    body: str, recipe: dict[str, Any], probe, mounted: str = ""
+) -> list[str]:
+    if recipe.get("container"):
         # An unnamed volume gets a new random name on every machine compose
         # brings the application up on, so the name it had when the snapshot
         # was taken belongs to a volume nothing mounts. The data goes into the
-        # one the container has now, and creating a volume would be wrong.
-        volume = probe.mounted_volume(container, str(recipe["destination"]))
+        # one the container has now - `mounted`, found before anything was
+        # stopped - and creating a volume would be wrong.
+        volume = mounted
     else:
         volume = str(recipe["volume"])
         probe.capture(

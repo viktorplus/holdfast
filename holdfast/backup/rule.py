@@ -155,12 +155,9 @@ class Declared:
             if component.type == "path":
                 paths.append(component.path)  # type: ignore[attr-defined]
             elif component.type == "docker_volume":
-                # `volume`/`container`/`destination` are added to
-                # DockerVolumeComponent in task 6; read them defensively so
-                # this task can be built and tested before that lands.
-                volume = getattr(component, "volume", "")
-                container = getattr(component, "container", "")
-                destination = getattr(component, "destination", "")
+                volume = component.volume  # type: ignore[attr-defined]
+                container = component.container  # type: ignore[attr-defined]
+                destination = component.destination  # type: ignore[attr-defined]
                 if volume:
                     volumes.add(volume)
                 elif container:

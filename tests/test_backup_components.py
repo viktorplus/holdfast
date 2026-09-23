@@ -920,10 +920,15 @@ def test_an_unnamed_volume_is_found_through_its_container(tmp_path):
 
 def test_an_explicit_volume_whose_storage_cannot_be_read_stops_the_backup(tmp_path):
     probe = FakeProbe(mountpoints={"uploads": str(tmp_path / "gone")})
-    with pytest.raises(BackupError, match="rootless"):
+    with pytest.raises(BackupError) as caught:
         build("docker_volume", name="uploads", volume="uploads").artifacts(
             ctx_with(probe)
         )
+
+    assert "rootless" in str(caught.value)
+    assert "remove this component" in str(caught.value)
+    # exclude is refused in this form, so it is not advice for it.
+    assert "exclude" not in str(caught.value)
 
 
 def test_the_manifest_records_which_volume_was_named(tmp_path):

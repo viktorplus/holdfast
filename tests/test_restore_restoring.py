@@ -6,7 +6,7 @@ from support import PATH_RECIPE, Runs, SnapshotProbe, artifact, snapshot_dir
 
 from holdfast import jobs
 from holdfast.backup.decrypt import open_identity
-from holdfast.backup.model import RestoreError
+from holdfast.backup.model import BackupError, RestoreError
 from holdfast.backup.restore import restore
 from holdfast.backup.snapshot import load_snapshot
 
@@ -405,15 +405,37 @@ def test_an_unnamed_volume_goes_into_the_one_its_container_has_now(tmp_path: Pat
 def test_an_unnamed_volume_without_its_container_asks_for_the_application_first(
     tmp_path: Path,
 ):
+    """Found out before anything is stopped: there is nothing to put the data
+    into, and a restore that has already started cannot say so cleanly."""
     directory = snapshot_dir(tmp_path, artifact("v.tar.zst", ANONYMOUS))
     probe = SnapshotProbe()
 
     with pytest.raises(RestoreError) as caught:
         restoring(directory, tmp_path, probe=probe)
 
-    assert "PARTIALLY RESTORED" in str(caught.value)
     assert "docker compose up -d" in str(caught.value)
-    assert ["docker", "start", "app-web-1"] in probe.ran
+    assert "Nothing has been changed" in str(caught.value)
+    assert not [argv for argv in probe.ran if argv[:2] == ["docker", "stop"]]
+
+
+def test_a_container_docker_does_not_know_still_gets_the_hint(tmp_path: Path):
+    """The real probe's error for a missing container is docker inspect's own,
+    which says nothing about bringing the application up."""
+
+    class NoSuchContainer(SnapshotProbe):
+        def mounted_volume(self, container: str, destination: str) -> str:
+            raise BackupError(f"inspecting the mounts of {container!r}: no such object")
+
+    directory = snapshot_dir(tmp_path, artifact("v.tar.zst", ANONYMOUS))
+    probe = NoSuchContainer()
+
+    with pytest.raises(RestoreError) as caught:
+        restoring(directory, tmp_path, probe=probe)
+
+    assert "no such object" in str(caught.value)
+    assert "docker compose up -d" in str(caught.value)
+    assert "Nothing has been changed" in str(caught.value)
+    assert probe.ran == []
 
 
 def test_a_volume_whose_storage_cannot_be_read_is_refused(tmp_path: Path):

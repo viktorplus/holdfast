@@ -151,12 +151,18 @@ class DockerVolumeComponent(Component):
     def _where(self, volume: str, ctx: BuildContext) -> str:
         where = ctx.probe.volume_mountpoint(volume)
         if not Path(where).is_dir():
+            # The two forms are told different things: exclude is refused in
+            # the one that names a single volume.
+            remedy = (
+                "use a local volume driver for it, or remove this component"
+                if self.volume or self.container
+                else "name the volume in exclude if it is not wanted here"
+            )
             raise BackupError(
                 f"component {self.name!r}: docker says the volume {volume!r} "
                 f"is at {where}, and that is not a directory this can read. "
                 "Under rootless Docker or a non-local volume driver it will "
-                "not be one; name the volume in exclude if it is not wanted "
-                "here."
+                f"not be one; {remedy}."
             )
         return where
 
