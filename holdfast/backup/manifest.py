@@ -43,6 +43,7 @@ def build_manifest(
     encryption: dict[str, Any],
     components: list[dict[str, Any]],
     artifacts: list[dict[str, Any]],
+    skipped: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     return {
         "format": FORMAT,
@@ -55,6 +56,10 @@ def build_manifest(
         "encryption": encryption,
         "components": components,
         "artifacts": artifacts,
+        # Always present, even empty: what auto-discovery chose not to take is
+        # the answer to "why is this volume not in the snapshot?", and a
+        # missing key would leave the reader unsure the question was asked.
+        "skipped": skipped or [],
     }
 
 

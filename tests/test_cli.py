@@ -2,7 +2,7 @@ import os
 from pathlib import Path
 
 import pytest
-from support import needs_sh, posix_only
+from support import ORPHAN_VOLUME, needs_sh, posix_only
 
 import holdfast
 from holdfast import jobs
@@ -380,6 +380,35 @@ def test_a_dry_run_shows_the_lines_and_writes_nothing(tmp_path, capsys):
     assert code == 0
     assert "greeting.bin" in out
     assert "printf 'hello holdfast'" in out
+    assert "mode: manual" in out
+    assert not (tmp_path / "backups").exists()
+
+
+def test_an_auto_dry_run_says_what_it_would_leave_out(tmp_path, capsys, monkeypatch):
+    import holdfast.backup.probe as probe_module
+
+    class Machine(probe_module.Probe):
+        def inspect_containers(self):
+            return []
+
+        def volumes(self):
+            return [ORPHAN_VOLUME]
+
+    monkeypatch.setattr(probe_module, "Probe", Machine)
+    directory = a_machine(tmp_path)
+    toml = directory / "holdfast.toml"
+    toml.write_text(
+        toml.read_text("utf-8").replace("[backup]\n", '[backup]\nmode = "auto"\n'),
+        encoding="utf-8",
+    )
+
+    code = main(["--config-dir", str(directory), "backup", "--dry-run"])
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "mode: auto" in out
+    assert "not taken:" in out
+    assert f"volume {ORPHAN_VOLUME}: no container uses it" in out
     assert not (tmp_path / "backups").exists()
 
 

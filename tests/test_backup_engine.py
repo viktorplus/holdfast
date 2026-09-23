@@ -6,11 +6,20 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
-from support import config, needs_sh, posix_only
+from support import (
+    ORPHAN_VOLUME,
+    config,
+    inspect_entry,
+    needs_sh,
+    posix_only,
+    volume_mount,
+)
 
 from holdfast import jobs
-from holdfast.backup import BackupBusy, BackupError
-from holdfast.backup.engine import rotate, run_backup, run_line
+from holdfast.backup import BackupBusy, BackupError, engine
+from holdfast.backup.engine import GIGABYTE, rotate, run_backup, run_line
+from holdfast.backup.machine import parse_inspect
+from holdfast.backup.manifest import build_manifest
 
 WHEN = datetime(2026, 9, 20, 23, 15, 0, tzinfo=UTC)
 SNAPSHOT = "20260920-231500"
@@ -474,3 +483,124 @@ def test_a_finished_run_rotates_and_reports_what_it_could_not(tmp_path: Path):
     # Not "no warnings at all": on Windows the `latest` link needs a privilege
     # this does not have, and saying so is the right behaviour.
     assert [w for w in result.warnings if "old snapshot" in w] == []
+
+
+# --------------------------------------------------------------------------
+# the manifest's list of what was left out
+# --------------------------------------------------------------------------
+
+
+def a_manifest(**extra):
+    return build_manifest(
+        snapshot=SNAPSHOT,
+        created_at=WHEN.isoformat(),
+        host_label="web-1",
+        compression={"tool": "zstd", "level": 10},
+        encryption={"enabled": False},
+        components=[],
+        artifacts=[],
+        **extra,
+    )
+
+
+def test_a_manifest_with_nothing_skipped_still_says_so():
+    """An empty list, not a missing key: a reader should not have to guess
+    whether this snapshot predates the list or simply left nothing out."""
+    assert a_manifest()["skipped"] == []
+
+
+def test_a_manifest_keeps_the_skipped_list_it_is_given():
+    skipped = [{"what": "volume x", "reason": "no container uses it"}]
+    assert a_manifest(skipped=skipped)["skipped"] == skipped
+
+
+# --------------------------------------------------------------------------
+# auto mode: the rule's components, the room they need, what was left out
+# --------------------------------------------------------------------------
+
+
+class Machine:
+    """A fake probe with one web container, its named volume and an orphan."""
+
+    def __init__(self, tmp_path: Path, size_mb: int = 1):
+        self.mountpoint = tmp_path / "vol"
+        self.mountpoint.mkdir(exist_ok=True)
+        self.size_mb = size_mb
+
+    def inspect_containers(self):
+        entry = inspect_entry(
+            "app-web-1", "nginx:1", mounts=[volume_mount("webdata", "/data")]
+        )
+        return parse_inspect(json.dumps([entry]))
+
+    def volumes(self):
+        return ["webdata", ORPHAN_VOLUME]
+
+    def volume_mountpoint(self, name: str) -> str:
+        return str(self.mountpoint)
+
+    def directory_size_mb(self, path: str) -> int:
+        return self.size_mb
+
+
+def test_auto_backs_up_what_the_rule_finds_and_names_what_it_left(tmp_path: Path):
+    root, cfg = setup(tmp_path, **{"backup.mode": "auto"})
+    result = run_backup(cfg, runner=Runner(), now=WHEN, probe=Machine(tmp_path))
+
+    manifest = json.loads((root / SNAPSHOT / "manifest.json").read_text("utf-8"))
+    orphan = {"what": f"volume {ORPHAN_VOLUME}", "reason": "no container uses it"}
+    assert [a["path"] for a in manifest["artifacts"]] == [
+        "docker-volumes/webdata.tar.zst"
+    ]
+    assert manifest["skipped"] == [orphan]
+    assert [s.as_dict() for s in result.skipped] == [orphan]
+
+
+def test_too_little_room_for_the_estimate_stops_it_before_anything_is_written(
+    tmp_path: Path, monkeypatch
+):
+    """Free space alone is not enough when the rule already knows the snapshot
+    will eat most of it."""
+    root, cfg = setup(tmp_path, **{"backup.mode": "auto", "backup.min_free_gb": 8})
+    monkeypatch.setattr(
+        engine.shutil,
+        "disk_usage",
+        lambda _: shutil._ntuple_diskusage(
+            100 * GIGABYTE, 90 * GIGABYTE, 10 * GIGABYTE
+        ),
+    )
+    with pytest.raises(BackupError, match="estimated at up to 3000 MB"):
+        run_backup(
+            cfg, runner=Runner(), now=WHEN, probe=Machine(tmp_path, size_mb=3000)
+        )
+
+    assert nothing_written(root)
+
+
+def test_no_estimate_asks_for_no_room(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(
+        engine.shutil,
+        "disk_usage",
+        lambda _: shutil._ntuple_diskusage(
+            100 * GIGABYTE, 90 * GIGABYTE, 10 * GIGABYTE
+        ),
+    )
+    engine._require_room(tmp_path, 0, 8)
+
+
+def test_two_artifacts_with_one_name_stop_it_before_anything_is_written(
+    tmp_path: Path,
+):
+    """Otherwise the second archive quietly replaces the first, and the
+    manifest lists a file that is no longer the one it describes."""
+    root, cfg = setup(
+        tmp_path,
+        a_command("one", artifact="same.bin"),
+        a_command("two", artifact="same.bin"),
+    )
+    runner = Runner()
+    with pytest.raises(BackupError, match=r"'same\.bin'.*'one'.*'two'"):
+        run_backup(cfg, runner=runner, now=WHEN)
+
+    assert runner.lines == []
+    assert nothing_written(root)

@@ -34,7 +34,9 @@ from .encrypt import Encryption
 from .manifest import build_manifest, digest, write_sha256sums
 from .model import Artifact, BackupBusy, BackupError, BuildContext, Component
 from .offsite import send
-from .registry import load_components
+from .probe import Probe
+from .rule import Skip
+from .selection import Selection, select
 
 Runner = Callable[[str, Path], int]
 
@@ -51,6 +53,7 @@ class BackupResult:
     artifacts: list[dict[str, Any]]
     total_bytes: int
     warnings: list[str] = field(default_factory=list)
+    skipped: list[Skip] = field(default_factory=list)
 
 
 # bash, not sh: a pipe reports only its last command unless pipefail is on,
@@ -85,13 +88,16 @@ def run_backup(
     *,
     runner: Runner | None = None,
     now: datetime | None = None,
+    probe: Any = None,
+    components_file: Path | None = None,
 ) -> BackupResult:
     runner = shell_runner if runner is None else runner
     now = now or datetime.now(UTC)
+    probe = Probe() if probe is None else probe
 
     encryption = Encryption.from_config(cfg)
     _require_tools(encryption, runner)
-    components = load_components(cfg)
+    selection = select(cfg, probe, components_file)
 
     root = Path(str(cfg.get("backup.root")))
     jobs_dir = Path(str(cfg.get("jobs.dir")))
@@ -99,14 +105,16 @@ def run_backup(
 
     with _lock(str(cfg.get("backup.lock_file"))):
         root.mkdir(parents=True, exist_ok=True)
-        _require_space(root, int(cfg.get("backup.min_free_gb") or 0))
+        minimum_gb = int(cfg.get("backup.min_free_gb") or 0)
+        _require_space(root, minimum_gb)
+        _require_room(root, selection.estimate_mb, minimum_gb)
 
         temporary = root / f".{snapshot}{SNAPSHOT_SUFFIX}"
         os.umask(0o077)
         temporary.mkdir()
         try:
             result = _fill(
-                temporary, snapshot, now, cfg, encryption, components, runner
+                temporary, snapshot, now, cfg, encryption, selection, probe, runner
             )
         except BaseException as exc:
             _discard(temporary, root)
@@ -138,26 +146,60 @@ def run_backup(
     return result
 
 
+def dry_run(cfg: Config, *, probe: Any, components_file: Path | None = None) -> str:
+    """What a backup would do, as text, without writing anything.
+
+    The same selection the run makes, so what the operator reads here is what
+    tonight's backup takes - including where each component came from and
+    what auto-discovery left out, which is what they need to judge the rule.
+    """
+    selection = select(cfg, probe, components_file)
+    encryption = Encryption.from_config(cfg)
+    ctx = _context(cfg, probe)
+    lines = [f"mode: {selection.mode}"]
+    for component in selection.components:
+        about = f"{component.type}, from {selection.origins[component.name]}"
+        if component.name in selection.sizes_mb:
+            about += f", ~{selection.sizes_mb[component.name]} MB"
+        lines.append(f"{component.name} ({about})")
+        for artifact in component.artifacts(ctx):
+            lines.append(f"  {artifact.name}{encryption.suffix}")
+            lines.append(f"    {encryption.wrap(artifact.produce)}")
+    if selection.skipped:
+        lines += ["", "not taken:"]
+        lines += [f"  {skip.what}: {skip.reason}" for skip in selection.skipped]
+    if selection.estimate_mb:
+        lines += [
+            "",
+            f"estimated size before compression: {selection.estimate_mb} MB",
+        ]
+    return "\n".join(lines) + "\n"
+
+
 def _fill(
     directory: Path,
     snapshot: str,
     now: datetime,
     cfg: Config,
     encryption: Encryption,
-    components: list[Component],
+    selection: Selection,
+    probe: Any,
     runner: Runner,
 ) -> BackupResult:
-    ctx = BuildContext(
-        zstd_level=int(cfg.get("backup.zstd_level") or 0),
-        zstd_threads=int(cfg.get("backup.zstd_threads") or 0),
-    )
+    ctx = _context(cfg, probe)
+    components = selection.components
+    planned = [
+        (component, artifact)
+        for component in components
+        for artifact in component.artifacts(ctx)
+    ]
+    _require_distinct(directory, planned, encryption)
     records: list[dict[str, Any]] = []
     total = 0
-    for component in components:
-        for artifact in component.artifacts(ctx):
-            record = _produce(directory, component, artifact, encryption, runner)
-            records.append(record)
-            total += record["size"]
+    for component, artifact in planned:
+        record = _produce(directory, component, artifact, encryption, runner)
+        records.append(record)
+        total += record["size"]
     if not records:
         raise BackupError(
             "nothing to back up: no [[component]] produced an artifact. An empty "
@@ -173,12 +215,47 @@ def _fill(
         encryption=encryption.describe(),
         components=[c.describe() for c in components],
         artifacts=records,
+        skipped=[skip.as_dict() for skip in selection.skipped],
     )
     (directory / "manifest.json").write_text(
         json.dumps(manifest, indent=2), encoding="utf-8"
     )
     write_sha256sums(directory)
-    return BackupResult(snapshot, directory, records, total, [])
+    return BackupResult(snapshot, directory, records, total, [], selection.skipped)
+
+
+def _context(cfg: Config, probe: Any) -> BuildContext:
+    return BuildContext(
+        zstd_level=int(cfg.get("backup.zstd_level") or 0),
+        zstd_threads=int(cfg.get("backup.zstd_threads") or 0),
+        probe=probe,
+    )
+
+
+def _require_distinct(
+    directory: Path,
+    planned: list[tuple[Component, Artifact]],
+    encryption: Encryption,
+) -> None:
+    """Refuse two artifacts that would land on the same file.
+
+    The second would quietly replace the first, and the manifest would then
+    list a file that is no longer the one it describes. Auto-discovery makes
+    this reachable: two containers whose names fold to the same slug. Checked
+    on the whole list before the first byte, so the run fails with nothing
+    half-written.
+    """
+    owners: dict[Path, str] = {}
+    for component, artifact in planned:
+        name = artifact.name + encryption.suffix
+        destination = _inside(directory, name, component.name)
+        if destination in owners:
+            raise BackupError(
+                f"two artifacts would both be written to {name!r}: one from "
+                f"component {owners[destination]!r}, one from component "
+                f"{component.name!r}"
+            )
+        owners[destination] = component.name
 
 
 def _produce(
@@ -249,6 +326,24 @@ def _require_space(root: Path, minimum_gb: int) -> None:
         )
 
 
+def _require_room(root: Path, estimate_mb: int, minimum_gb: int) -> None:
+    """Refuse a snapshot that would leave less than the minimum behind.
+
+    Free space alone passes a run that the rule already knows will eat most of
+    it. The estimate is before compression, so this errs on the side of
+    refusing; a machine that is short by that margin is short anyway.
+    """
+    if estimate_mb == 0:
+        return
+    free = shutil.disk_usage(root).free
+    if free - estimate_mb * 1024**2 < minimum_gb * GIGABYTE:
+        raise BackupError(
+            f"this snapshot is estimated at up to {estimate_mb} MB before "
+            f"compression, {root} has {free / GIGABYTE:.1f} GB free, and "
+            f"backup.min_free_gb asks for {minimum_gb} to be left"
+        )
+
+
 @contextlib.contextmanager
 def _lock(path: str) -> Iterator[None]:
     """Held for the run, so two backups cannot write at once.
@@ -305,6 +400,7 @@ def _with_directory(result: BackupResult, directory: Path) -> BackupResult:
         result.artifacts,
         result.total_bytes,
         result.warnings,
+        result.skipped,
     )
 
 

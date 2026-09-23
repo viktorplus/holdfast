@@ -189,10 +189,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "backup":
         import os
 
-        from .backup import BackupBusy, BackupError, BuildContext, load_components
+        from .backup import BackupBusy, BackupError
         from .backup.discover import discover
-        from .backup.encrypt import Encryption
-        from .backup.engine import run_backup
+        from .backup.engine import dry_run, run_backup
         from .backup.probe import Probe
 
         if args.discover:
@@ -202,20 +201,16 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         config_dir = Path(args.config_dir)
+        components_file = config_dir / "components.toml"
         try:
             cfg = load_config(machine=config_dir / "holdfast.toml", env=os.environ)
             if args.dry_run:
-                encryption = Encryption.from_config(cfg)
-                ctx = BuildContext(
-                    zstd_level=int(cfg.get("backup.zstd_level") or 0),
-                    zstd_threads=int(cfg.get("backup.zstd_threads") or 0),
+                print(
+                    dry_run(cfg, probe=Probe(), components_file=components_file),
+                    end="",
                 )
-                for component in load_components(cfg):
-                    for artifact in component.artifacts(ctx):
-                        print(f"{artifact.name}{encryption.suffix}")
-                        print(f"  {encryption.wrap(artifact.produce)}")
                 return 0
-            result = run_backup(cfg)
+            result = run_backup(cfg, components_file=components_file)
         except BackupBusy as exc:
             # Not an error: the nightly timer overlapping a manual run. A
             # non-zero code here would page somebody every such night.
@@ -230,6 +225,8 @@ def main(argv: list[str] | None = None) -> int:
             f"{result.directory} ({result.total_bytes} bytes in "
             f"{len(result.artifacts)} artifacts)"
         )
+        for skip in result.skipped:
+            print(f"skipped {skip.what}: {skip.reason}")
         return 0
 
     if args.command == "restore":
