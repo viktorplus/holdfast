@@ -551,6 +551,18 @@ def test_an_excluded_databases_bind_is_excluded_not_covered_by_a_dump():
     assert skip_reason(result, "bind mount /srv/db_data") == ["excluded by you"]
 
 
+def test_an_excluded_databases_bind_inside_the_project_stays_out_of_its_archive():
+    """A regression case: the project's own path table must still leave the
+    excluded database's data bind out of its archive, even though no dump
+    covers it - being excluded does not make it any less "the project's
+    database data", it only changes why it is skipped."""
+    result = planned(wordpress_site(), [WP_VOLUME], exclude=["container:myapp-db-1"])
+
+    project = next(t for t in result.tables if t["type"] == "path")
+    assert project["exclude"] == ["root/myapp/db_data"]
+    assert skip_reason(result, "bind mount /root/myapp/db_data") == ["excluded by you"]
+
+
 def test_a_declared_databases_volume_is_still_covered_by_the_dump():
     mysql = component_types()["mysql"].from_config(
         {"name": "db", "container": "myapp-db-1"}

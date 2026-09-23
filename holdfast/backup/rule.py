@@ -318,22 +318,23 @@ def plan(
             for m in c.mounts
             if m.kind in ("volume", "bind") and under(data_dir, m.destination)
         ]
+        data_volumes.update(m.name for m in data if m.kind == "volume")
+        data_binds.update(m.source for m in data if m.kind == "bind")
+
         what = f"database container {c.name}"
         if c.name in exclude.containers:
-            # No dump is taken for an excluded container, so its data files
-            # are not "covered by" anything; they stay out of data_volumes
-            # and data_binds so the volume loop below falls through to its
-            # own "excluded by you" check. Bind mounts have no such generic
-            # check - they are gathered per non-excluded container - so this
-            # is said here instead.
+            # No dump is taken for an excluded container, but its data files
+            # are still remembered as "data": a bind under a compose project
+            # directory must stay out of that project's own archive either
+            # way. The volume loop checks exclusion before "covered by the
+            # dump" so this reads "excluded by you" there; bind mounts have
+            # no such generic check - they are gathered per non-excluded
+            # container - so it is said here instead.
             for m in data:
                 if m.kind == "bind":
                     skipped.append(Skip(f"bind mount {m.source}", "excluded by you"))
             skipped.append(Skip(what, "excluded by you"))
             continue
-        data_volumes.update(m.name for m in data if m.kind == "volume")
-        data_binds.update(m.source for m in data if m.kind == "bind")
-
         if c.name in declared.databases:
             skipped.append(Skip(what, "declared by hand"))
             continue
@@ -408,12 +409,15 @@ def plan(
         what = f"volume {v}"
         if not mounted:
             skipped.append(Skip(what, "no container uses it"))
-        elif v in data_volumes:
-            skipped.append(Skip(what, "database data, covered by the dump"))
         elif v in exclude.volumes or all(
             container in exclude.containers for container, _ in mounted
         ):
+            # Checked before "covered by the dump": an excluded database's
+            # own data volume is excluded too, not dumped, so it must not
+            # claim a dump that never runs.
             skipped.append(Skip(what, "excluded by you"))
+        elif v in data_volumes:
+            skipped.append(Skip(what, "database data, covered by the dump"))
         elif (
             declared.every_volume
             or v in declared.volumes
