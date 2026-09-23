@@ -104,12 +104,21 @@ def select(cfg: Config, probe: Any, components_file: Path | None = None) -> Sele
         sizes_mb: dict[str, int] = {}
         for name, kind, where in found.measure:
             sizes_mb[name] = sizes_mb.get(name, 0) + _size_of(probe, kind, where)
+        # Left there by manual mode, most likely; an operator who switched
+        # should hear that the list stopped counting, not find out later.
+        auto_warnings = []
+        if components_file is not None and components_file.exists():
+            auto_warnings.append(
+                f"{components_file} is not read in auto mode; delete it, or set "
+                'backup.mode = "manual" to use it'
+            )
         return Selection(
             mode=mode,
             components=[*declared, *added],
             origins=origins,
             skipped=found.skipped,
             sizes_mb=sizes_mb,
+            warnings=auto_warnings,
         )
 
     added = []

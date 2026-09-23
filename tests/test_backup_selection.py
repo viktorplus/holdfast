@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 import pytest
-from support import ORPHAN_VOLUME, WP_VOLUME, config, wordpress_site
+from support import ORPHAN_VOLUME, WP_VOLUME, config, myapp_exists, wordpress_site
 
 from holdfast.backup.components_file import HEADER, write
 from holdfast.backup.machine import parse_inspect
@@ -163,8 +163,8 @@ def test_a_bad_exclude_item_is_refused_even_in_manual_mode():
 
 def test_auto_on_a_wordpress_site_finds_three_components(monkeypatch):
     # wordpress_site()'s project directory, /root/myapp, does not exist on
-    # this machine; plan_for asks os.path.exists, so it is patched to say yes.
-    monkeypatch.setattr("holdfast.backup.selection.os.path.exists", lambda p: True)
+    # this machine; plan_for asks os.path.exists, so that one path says yes.
+    myapp_exists(monkeypatch)
     cfg = config(**{"backup.mode": "auto"}, component=[])
     probe = Machine(entries=wordpress_site(), volumes=[WP_VOLUME, ORPHAN_VOLUME])
 
@@ -186,7 +186,7 @@ def test_auto_on_a_wordpress_site_finds_three_components(monkeypatch):
 
 
 def test_auto_plus_a_hand_declared_component_adds_a_fourth(monkeypatch):
-    monkeypatch.setattr("holdfast.backup.selection.os.path.exists", lambda p: True)
+    myapp_exists(monkeypatch)
     cfg = config(
         **{"backup.mode": "auto"},
         component=[a_path_component("nginx", "/etc/nginx")],
@@ -203,6 +203,38 @@ def test_auto_plus_a_hand_declared_component_adds_a_fourth(monkeypatch):
         "volume-myapp-wordpress-1-var-www-html",
     ]
     assert selection.origins["nginx"] == "holdfast.toml"
+
+
+def test_auto_does_not_read_a_components_file_and_says_so(tmp_path: Path):
+    """An operator who switched from manual is told the list stopped counting."""
+    components_file = write_components_toml(tmp_path, a_path_component("b", "/etc/b"))
+    cfg = config(**{"backup.mode": "auto"}, component=[])
+
+    selection = select(cfg, Machine(), components_file=components_file)
+
+    assert selection.components == []
+    assert selection.warnings == [
+        (
+            f"{components_file} is not read in auto mode; delete it, or set "
+            'backup.mode = "manual" to use it'
+        )
+    ]
+
+
+def test_auto_without_a_components_file_has_no_warnings(tmp_path: Path):
+    cfg = config(**{"backup.mode": "auto"}, component=[])
+
+    selection = select(cfg, Machine(), components_file=tmp_path / "components.toml")
+
+    assert selection.warnings == []
+
+
+def test_a_components_file_that_cannot_be_read_is_a_backup_error(tmp_path: Path):
+    unreadable = tmp_path / "components.toml"
+    unreadable.mkdir()
+
+    with pytest.raises(BackupError, match=r"reading .*components\.toml"):
+        select(config(), Machine(), components_file=unreadable)
 
 
 # --------------------------------------------------------------------------

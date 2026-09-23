@@ -2,7 +2,14 @@ import json
 from pathlib import Path
 
 import pytest
-from support import ORPHAN_VOLUME, WP_VOLUME, config, inspect_entry, wordpress_site
+from support import (
+    ORPHAN_VOLUME,
+    WP_VOLUME,
+    config,
+    inspect_entry,
+    myapp_exists,
+    wordpress_site,
+)
 
 from holdfast.backup.components_file import read_tables, write
 from holdfast.backup.discover import discover
@@ -34,7 +41,7 @@ class Machine:
 def project_directories_exist(monkeypatch):
     # wordpress_site()'s /root/myapp does not exist on the machine running the
     # tests; the rule asks os.path.exists through selection.plan_for.
-    monkeypatch.setattr("holdfast.backup.selection.os.path.exists", lambda p: True)
+    myapp_exists(monkeypatch)
 
 
 def a_wordpress_site() -> Machine:

@@ -159,3 +159,61 @@ def test_difference_names_added_removed_and_changed_in_that_order():
 def test_difference_of_nothing_is_nothing():
     assert difference([], []) == []
     assert difference(TABLES, TABLES) == []
+
+
+@pytest.mark.parametrize(
+    "body", ["component = 1\n", '[component]\ntype = "path"\n', "component = [1]\n"]
+)
+def test_read_tables_refuses_a_component_that_is_not_a_list_of_tables(tmp_path, body):
+    path = tmp_path / "components.toml"
+    path.write_text(HEADER + body, encoding="utf-8")
+
+    with pytest.raises(BackupError, match=r"components\.toml"):
+        read_tables(path)
+
+
+def test_write_over_a_file_with_no_table_list_treats_it_as_empty(tmp_path):
+    path = tmp_path / "components.toml"
+    path.write_text(HEADER + "component = 1\n", encoding="utf-8")
+
+    assert write(path, TABLES[:1]) == []
+    assert read_tables(path) == TABLES[:1]
+
+
+def test_a_file_that_cannot_be_opened_is_a_backup_error_naming_it(tmp_path):
+    # A directory: opening it fails on every platform, as a file without
+    # read permission does for anyone but root.
+    path = tmp_path / "components.toml"
+    path.mkdir()
+
+    with pytest.raises(BackupError, match=r"reading .*components\.toml"):
+        read_tables(path)
+    with pytest.raises(BackupError, match=r"reading .*components\.toml"):
+        written_by_discover(path)
+
+
+def test_a_write_that_is_refused_is_a_backup_error_naming_the_file(
+    tmp_path, monkeypatch
+):
+    def refuse(*args, **kwargs):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr("holdfast.backup.components_file.atomic.write_text", refuse)
+
+    with pytest.raises(BackupError, match=r"writing .*components\.toml.*denied"):
+        write(tmp_path / "components.toml", TABLES)
+
+
+def test_a_refused_copy_to_prev_is_a_backup_error_too(tmp_path, monkeypatch):
+    path = tmp_path / "components.toml"
+    write(path, TABLES)
+    before = path.read_bytes()
+
+    def refuse(*args, **kwargs):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr("holdfast.backup.components_file.shutil.copyfile", refuse)
+
+    with pytest.raises(BackupError, match=r"writing .*components\.toml"):
+        write(path, TABLES[:1])
+    assert path.read_bytes() == before

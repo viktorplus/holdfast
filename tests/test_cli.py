@@ -504,6 +504,26 @@ def test_backup_discover_in_manual_writes_components_toml_into_the_config_dir(
     assert f"volume {ORPHAN_VOLUME}: no container uses it" in out
 
 
+def test_backup_discover_without_root_says_so_instead_of_tracing_back(
+    tmp_path, capsys, monkeypatch
+):
+    """/etc/holdfast is root's; a plain user gets PermissionError from it."""
+    _an_empty_docker_host(monkeypatch)
+
+    def refuse(*args, **kwargs):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr("holdfast.backup.components_file.atomic.write_text", refuse)
+
+    code = main(["--config-dir", str(tmp_path / "etc"), "backup", "--discover"])
+
+    err = capsys.readouterr().err
+    assert code == 1
+    assert "holdfast backup: writing" in err
+    assert "Permission denied" in err
+    assert "Traceback" not in err
+
+
 def test_backup_discover_in_auto_writes_nothing(tmp_path, capsys, monkeypatch):
     _an_empty_docker_host(monkeypatch)
     directory = tmp_path / "etc"

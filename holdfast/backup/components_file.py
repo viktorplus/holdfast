@@ -38,6 +38,10 @@ def written_by_discover(path: Path) -> bool:
             first = handle.readline().rstrip("\r\n")
     except FileNotFoundError:
         return False
+    except OSError as exc:
+        # Most often /etc/holdfast read by a user who is not root: a sentence
+        # naming the file, not a traceback.
+        raise BackupError(f"reading {path}: {exc}") from exc
     return first == HEADER.splitlines()[0]
 
 
@@ -48,9 +52,14 @@ def read_tables(path: Path) -> list[dict[str, Any]]:
             data = tomllib.load(handle)
     except FileNotFoundError:
         return []
+    except OSError as exc:
+        raise BackupError(f"reading {path}: {exc}") from exc
     except tomllib.TOMLDecodeError as exc:
         raise BackupError(f"{path} is not valid TOML: {exc}") from exc
-    return data.get("component", [])
+    tables = data.get("component", [])
+    if not isinstance(tables, list) or not all(isinstance(t, dict) for t in tables):
+        raise BackupError(f"{path}: component is not a list of [[component]] tables")
+    return tables
 
 
 def _value(key: str, value: Any) -> str:
@@ -81,23 +90,28 @@ def render(tables: list[dict[str, Any]]) -> str:
 def write(path: Path, tables: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Replace ``path`` with ``tables``; return what it held before.
 
-    What it held is read before anything is touched, and a file that does not
-    parse held nothing as far as the difference is concerned - it is still
-    kept as `.prev`, since it may be the only copy of somebody's work.
+    What it held is read before anything is touched, and a file that cannot
+    be read as a table list held nothing as far as the difference is
+    concerned - it is still kept as `.prev`, since it may be the only copy of
+    somebody's work.
     """
     text = render(tables)
     try:
         previous = read_tables(path)
     except BackupError:
         previous = []
-    if path.exists():
-        kept = path.with_name(path.name + ".prev")
-        shutil.copyfile(path, kept)
-        # The same content as components.toml, so the same 0600; copyfile
-        # would leave it at the umask. Windows ignores it, as in atomic.
-        with contextlib.suppress(OSError):
-            kept.chmod(0o600)
-    atomic.write_text(path, text)
+    try:
+        if path.exists():
+            kept = path.with_name(path.name + ".prev")
+            shutil.copyfile(path, kept)
+            # The same content as components.toml, so the same 0600; copyfile
+            # would leave it at the umask. Windows ignores it, as in atomic.
+            with contextlib.suppress(OSError):
+                kept.chmod(0o600)
+        atomic.write_text(path, text)
+    except OSError as exc:
+        # /etc/holdfast without root, most often.
+        raise BackupError(f"writing {path}: {exc}") from exc
     return previous
 
 

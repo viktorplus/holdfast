@@ -223,3 +223,20 @@ def wordpress_site() -> list[dict]:
             env=["WORDPRESS_DB_PASSWORD=secret-value"],
         ),
     ]
+
+
+def myapp_exists(monkeypatch) -> None:
+    """Say /root/myapp exists, and leave every other path to the real check.
+
+    The rule asks `os.path.exists` whether a compose project directory is on
+    this machine. That function is shared by the whole process - pathlib and
+    shutil use it too on newer Pythons - so answering yes to everything
+    breaks unrelated file handling; only the fixture's directory is faked.
+    """
+    real = os.path.exists
+
+    def exists(path) -> bool:
+        where = os.fspath(path).replace("\\", "/")
+        return where == "/root/myapp" or where.startswith("/root/myapp/") or real(path)
+
+    monkeypatch.setattr(os.path, "exists", exists)
