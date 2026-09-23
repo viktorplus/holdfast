@@ -1,9 +1,13 @@
+import os
 import shlex
+import shutil
+import subprocess
 
 import pytest
 from support import needs_sh
 
 from holdfast.backup import BackupError, component_types
+from holdfast.backup.components.mysql import in_container
 from holdfast.backup.engine import run_line
 from holdfast.backup.model import NAME, BuildContext, slug
 
@@ -459,7 +463,17 @@ def test_the_manifest_describes_the_postgres_declaration():
         "databases": ["app"],
         "globals": False,
         "defaults_file": "",
+        "exclude_databases": [],
     }
+
+
+def test_an_excluded_postgres_database_is_not_dumped():
+    probe = FakeProbe(output="app\ntmp", running={"c"})
+    component = a_postgres(container="c", globals=False, exclude_databases=["tmp"])
+    artifacts = component.artifacts(ctx_with(probe))
+
+    assert [a.name for a in artifacts] == ["postgres/db-app.dump"]
+    assert component.describe()["exclude_databases"] == ["tmp"]
 
 
 # --------------------------------------------------------------------------
@@ -570,6 +584,9 @@ def test_the_mysql_recipe_and_check_say_what_they_know():
         "container": "c",
         "database": "shopdb",
         "defaults_file": "",
+        "user": "",
+        "credentials": "",
+        "password_env": "",
     }
     assert artifact.check == "zstd -dc >/dev/null"
 
@@ -588,7 +605,158 @@ def test_the_manifest_describes_the_mysql_declaration_and_no_password():
         "user": "backup",
         "databases": ["shopdb"],
         "defaults_file": "",
+        "credentials": "",
+        "password_env": "",
+        "exclude_databases": [],
     }
+
+
+# -- mysql, with the password the container was started with ---------------
+
+
+def a_container_env_mysql(**table):
+    return a_mysql(
+        container="c",
+        user="root",
+        credentials="container_env",
+        password_env="MYSQL_ROOT_PASSWORD",
+        **table,
+    )
+
+
+def test_the_in_container_script_finds_the_client_and_exports_the_password():
+    assert in_container("dump", "MYSQL_ROOT_PASSWORD", "-uroot x") == (
+        "c=$(command -v mariadb-dump || command -v mysqldump) || "
+        "{ echo 'neither mariadb-dump nor mysqldump is in this container' >&2; "
+        'exit 127; }; export MYSQL_PWD="$MYSQL_ROOT_PASSWORD"; exec "$c" -uroot x'
+    )
+
+
+def test_a_password_file_variable_is_read_inside_the_container():
+    script = in_container("client", "MYSQL_ROOT_PASSWORD_FILE", "-uroot")
+
+    assert 'export MYSQL_PWD="$(cat "$MYSQL_ROOT_PASSWORD_FILE")"; ' in script
+
+
+def test_a_root_without_a_password_exports_nothing():
+    script = in_container("admin", "", "ping")
+
+    assert "export" not in script
+    assert script.endswith('}; exec "$c" ping')
+
+
+def _client_in(directory, script: str):
+    """bash with nothing on PATH but the directory, as a bare container."""
+    directory.mkdir(exist_ok=True)
+    return subprocess.run(
+        [shutil.which("bash"), "-c", script],
+        env={**os.environ, "PATH": str(directory), "PW": "s3cret"},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+@needs_sh
+def test_the_script_hands_the_password_to_the_client_it_finds(tmp_path):
+    """Run for real: what the container's shell would do, with a stand-in
+    client that says which password reached it."""
+    fake = tmp_path / "bin" / "mysql"
+    fake.parent.mkdir()
+    fake.write_text('#!/bin/sh\necho "$MYSQL_PWD"\n', encoding="utf-8")
+    fake.chmod(0o755)
+    done = _client_in(fake.parent, in_container("client", "PW", "--version"))
+
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.strip() == "s3cret"
+
+
+@needs_sh
+def test_the_script_says_so_when_the_container_has_no_client(tmp_path):
+    done = _client_in(tmp_path / "empty", in_container("client", "PW", "--version"))
+
+    assert done.returncode == 127
+    assert "neither mariadb nor mysql" in done.stderr
+
+
+def test_a_container_env_dump_never_puts_the_password_on_the_command_line():
+    probe = FakeProbe(output="shopdb", running={"c"})
+    produce = a_container_env_mysql().artifacts(ctx_with(probe))[0].produce
+
+    assert produce.startswith("docker exec c sh -c ")
+    assert "-p" not in produce
+    assert "MYSQL_PWD" in produce
+    assert "--databases" in produce
+
+
+def test_a_container_env_listing_runs_inside_the_containers_shell():
+    probe = FakeProbe(output="shopdb", running={"c"})
+    a_container_env_mysql().artifacts(ctx_with(probe))
+
+    assert probe.asked[-1][:5] == ["docker", "exec", "c", "sh", "-c"]
+    assert "show databases" in probe.asked[-1][5]
+
+
+def test_a_refused_container_password_says_what_changed_it():
+    probe = FakeProbe(running={"c"}, fails="ERROR 1045 (28000): Access denied")
+    with pytest.raises(BackupError) as caught:
+        a_container_env_mysql().artifacts(ctx_with(probe))
+
+    assert "the password in the container's environment was not accepted" in str(
+        caught.value
+    )
+    assert "has no defaults_file" not in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "table, word",
+    [
+        ({"container": "c", "credentials": "other"}, "credentials"),
+        (
+            {"container": "c", "credentials": "container_env", "password_env": "a b"},
+            "password_env",
+        ),
+        ({"credentials": "container_env", "password_env": "PW"}, "container"),
+        (
+            {
+                "container": "c",
+                "credentials": "container_env",
+                "password_env": "PW",
+                "defaults_file": "/etc/holdfast/mysql.cnf",
+            },
+            "defaults_file",
+        ),
+        ({"container": "c", "exclude_databases": "tmp"}, "exclude_databases"),
+    ],
+)
+def test_a_mysql_declaration_that_cannot_work_is_refused(table, word):
+    with pytest.raises(BackupError, match=word):
+        a_mysql(**table)
+
+
+def test_the_mysql_system_schema_is_not_dumped():
+    """Users and grants of the old server; loaded into a new container they
+    only get in the way of the ones it was started with."""
+    probe = FakeProbe(output="mysql\nshopdb", running={"c"})
+    artifacts = a_mysql(container="c").artifacts(ctx_with(probe))
+
+    assert [a.name for a in artifacts] == ["mysql/shop-shopdb.sql.zst"]
+
+
+def test_an_excluded_mysql_database_is_not_dumped():
+    probe = FakeProbe(output="shop\ntmp", running={"c"})
+    component = a_mysql(container="c", exclude_databases=["tmp"])
+    artifacts = component.artifacts(ctx_with(probe))
+
+    assert [a.name for a in artifacts] == ["mysql/shop-shop.sql.zst"]
+    assert component.describe()["exclude_databases"] == ["tmp"]
+
+
+def test_the_rule_shaped_mysql_table_is_accepted():
+    component = a_container_env_mysql(databases=["*"])
+
+    assert component.describe()["credentials"] == "container_env"
+    assert component.describe()["password_env"] == "MYSQL_ROOT_PASSWORD"
 
 
 # --------------------------------------------------------------------------

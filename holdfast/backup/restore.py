@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .. import jobs
+from .components.mysql import CONTAINER_ENV, in_container
 from .decrypt import Identity, Run
 from .model import RestoreError
 from .services import Services, owners
@@ -358,9 +359,7 @@ def _lines_for(
     if record.kind == "pg_database":
         user = pg_user or str(recipe.get("user") or "")
         return _database_lines(body, container, user, str(recipe["database"]))
-    return _mysql_lines(
-        body, str(recipe.get("container") or ""), str(recipe["database"])
-    )
+    return _mysql_lines(body, recipe)
 
 
 def _inside(target: str, root: str) -> str:
@@ -458,8 +457,32 @@ def _database_lines(body: str, container: str, user: str, database: str) -> list
     ]
 
 
-def _mysql_lines(body: str, container: str, database: str) -> list[str]:
+def _mysql_lines(body: str, recipe: dict) -> list[str]:
+    """The same credentials the dump was taken with.
+
+    A dump that needed a defaults file or the container's own password to come
+    out needs the same to go back in; without it the one restore that matters
+    ends in Access denied.
+    """
+    container = str(recipe.get("container") or "")
+    user = str(recipe.get("user") or "")
+    if recipe.get("credentials") == CONTAINER_ENV:
+        password_env = str(recipe.get("password_env") or "")
+        login = f"-u{shlex.quote(user or 'root')}"
+        ping = "sh -c " + shlex.quote(
+            in_container("admin", password_env, f"{login} ping")
+        )
+        load = "sh -c " + shlex.quote(in_container("client", password_env, login))
+    else:
+        defaults_file = str(recipe.get("defaults_file") or "")
+        # --defaults-file first, for the same reason as in the dump.
+        flags = (
+            f"--defaults-file={shlex.quote(defaults_file)} " if defaults_file else ""
+        )
+        flags += f"-u {shlex.quote(user)} " if user else ""
+        ping = f"mysqladmin {flags}ping"
+        load = f"mysql {flags}".rstrip()
     return [
-        _ready(container, "mysqladmin ping"),
-        f"{body} | zstd -dc | " + _exec(container, "mysql", stdin=True),
+        _ready(container, ping),
+        f"{body} | zstd -dc | " + _exec(container, load, stdin=True),
     ]

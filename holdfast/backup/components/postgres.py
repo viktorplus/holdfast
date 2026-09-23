@@ -55,6 +55,7 @@ class PostgresComponent(Component):
     databases: tuple[str, ...] = ("*",)
     globals: bool = True
     defaults_file: str = ""
+    exclude_databases: tuple[str, ...] = ()
 
     type = "postgres"
 
@@ -64,6 +65,9 @@ class PostgresComponent(Component):
         listed = table.get("databases", ["*"])
         if not isinstance(listed, list):
             raise BackupError(f"component {name!r}: databases has to be a list")
+        excluded = table.get("exclude_databases", [])
+        if not isinstance(excluded, list):
+            raise BackupError(f"component {name!r}: exclude_databases has to be a list")
         return cls(
             name=name,
             user=cls._required(table, "user", name),
@@ -71,6 +75,7 @@ class PostgresComponent(Component):
             databases=tuple(str(item) for item in listed) or ("*",),
             globals=bool(table.get("globals", True)),
             defaults_file=str(table.get("defaults_file") or ""),
+            exclude_databases=tuple(str(item) for item in excluded),
         )
 
     def artifacts(self, ctx: BuildContext) -> list[Artifact]:
@@ -124,6 +129,7 @@ class PostgresComponent(Component):
             "databases": list(self.databases),
             "globals": self.globals,
             "defaults_file": self.defaults_file,
+            "exclude_databases": list(self.exclude_databases),
         }
 
     def containers(self) -> list[str]:
@@ -207,6 +213,9 @@ class PostgresComponent(Component):
                     f"component {self.name!r}: postgres answered with no databases "
                     "at all, which a working server does not do"
                 )
+        # After the emptiness check: a server that answered nothing is a
+        # failure, a server whose every database was excluded is a choice.
+        found = [db for db in found if db not in self.exclude_databases]
         for database in found:
             if not DATABASE_NAME.match(database):
                 raise BackupError(

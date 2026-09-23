@@ -7,10 +7,16 @@ not.
 The server's own schemas are left out. `information_schema` and
 `performance_schema` are views onto the server that is running, not data, and
 `sys` is built from them; replaying any of them over a live server is a way to
-break it rather than to restore it.
+break it rather than to restore it. `mysql` is left out too: it holds the old
+server's users and grants, and loaded into a new container it only gets in the
+way of the root password and the users that container was started with.
 
-holdfast never sees a password. mysql and mysqldump read their own defaults
-file, and this only passes the path.
+holdfast never sees a password. Either mysql and mysqldump read their own
+defaults file, and this only passes the path, or - with credentials set to
+container_env - the password stays where the database container keeps it. The
+command then runs in the container's own shell, which expands the variable
+named by password_env and hands it to the client as MYSQL_PWD: not in argv,
+where any process list shows it, and never through holdfast or onto a disk.
 """
 
 from __future__ import annotations
@@ -25,7 +31,28 @@ from ..model import Artifact, BackupError, BuildContext, Component
 LIST_DATABASES = "show databases"
 
 # Belongs to the running server, not to the data.
-SERVER_SCHEMAS = frozenset({"information_schema", "performance_schema", "sys"})
+SERVER_SCHEMAS = frozenset({"information_schema", "performance_schema", "sys", "mysql"})
+
+# A variable name, because it is pasted into a shell script unquoted.
+ENV_NAME = re.compile(r"^[A-Z_][A-Z0-9_]*$")
+
+# MariaDB 11 images no longer carry the mysql names, and MySQL images never
+# carried the mariadb ones, so the container's shell picks whichever it has.
+CLIENTS = {
+    "dump": ("mariadb-dump", "mysqldump"),
+    "client": ("mariadb", "mysql"),
+    "admin": ("mariadb-admin", "mysqladmin"),
+}
+
+CONTAINER_ENV = "container_env"
+
+# The one way the container's own password goes stale: the image reads it once,
+# when the data directory is first created.
+STALE_PASSWORD = (
+    " - the password in the container's environment was not accepted; if the "
+    "root password was changed after the container was first started, declare "
+    "defaults_file for this component instead"
+)
 
 # Same reasoning as the PostgreSQL type: this name becomes a file name inside
 # the snapshot.
@@ -39,12 +66,36 @@ DATABASE_NAME = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_-]*$")
 DUMP_FLAGS = "--single-transaction --quick --routines --events"
 
 
+def in_container(tool: str, password_env: str, args: str) -> str:
+    """A script for `sh -c` inside the database container.
+
+    export rather than `MYSQL_PWD=... exec`: whether an assignment in front of
+    exec reaches the program is up to the shell, and the container's shell is
+    not ours to choose. A `_FILE` variable names a file inside the container,
+    so the file is read there too.
+    """
+    first, second = CLIENTS[tool]
+    script = (
+        f"c=$(command -v {first} || command -v {second}) || "
+        f"{{ echo 'neither {first} nor {second} is in this container' >&2; "
+        "exit 127; }; "
+    )
+    if password_env.endswith("_FILE"):
+        script += f'export MYSQL_PWD="$(cat "${password_env}")"; '
+    elif password_env:
+        script += f'export MYSQL_PWD="${password_env}"; '
+    return script + f'exec "$c" {args}'
+
+
 @dataclass(frozen=True)
 class MysqlComponent(Component):
     container: str = ""
     user: str = ""
     databases: tuple[str, ...] = ("*",)
     defaults_file: str = ""
+    credentials: str = ""
+    password_env: str = ""
+    exclude_databases: tuple[str, ...] = ()
 
     type = "mysql"
 
@@ -54,12 +105,42 @@ class MysqlComponent(Component):
         listed = table.get("databases", ["*"])
         if not isinstance(listed, list):
             raise BackupError(f"component {name!r}: databases has to be a list")
+        container = str(table.get("container") or "")
+        defaults_file = str(table.get("defaults_file") or "")
+        credentials = str(table.get("credentials") or "")
+        password_env = str(table.get("password_env") or "")
+        if credentials not in ("", CONTAINER_ENV):
+            raise BackupError(
+                f"component {name!r}: credentials can only be {CONTAINER_ENV!r}, "
+                f"not {credentials!r}"
+            )
+        if password_env and not ENV_NAME.match(password_env):
+            raise BackupError(
+                f"component {name!r}: password_env {password_env!r} is not the "
+                "name of an environment variable"
+            )
+        if credentials and not container:
+            raise BackupError(
+                f"component {name!r}: credentials = {CONTAINER_ENV!r} reads the "
+                "password from a container, and no container is declared"
+            )
+        if credentials and defaults_file:
+            raise BackupError(
+                f"component {name!r}: credentials and defaults_file are two "
+                "sources of one password; keep one of them"
+            )
+        excluded = table.get("exclude_databases", [])
+        if not isinstance(excluded, list):
+            raise BackupError(f"component {name!r}: exclude_databases has to be a list")
         return cls(
             name=name,
-            container=str(table.get("container") or ""),
+            container=container,
             user=str(table.get("user") or ""),
             databases=tuple(str(item) for item in listed) or ("*",),
-            defaults_file=str(table.get("defaults_file") or ""),
+            defaults_file=defaults_file,
+            credentials=credentials,
+            password_env=password_env,
+            exclude_databases=tuple(str(item) for item in excluded),
         )
 
     def artifacts(self, ctx: BuildContext) -> list[Artifact]:
@@ -74,6 +155,9 @@ class MysqlComponent(Component):
                     "container": self.container,
                     "database": database,
                     "defaults_file": self.defaults_file,
+                    "user": self.user,
+                    "credentials": self.credentials,
+                    "password_env": self.password_env,
                 },
                 check="zstd -dc >/dev/null",
             )
@@ -87,6 +171,9 @@ class MysqlComponent(Component):
             "user": self.user,
             "databases": list(self.databases),
             "defaults_file": self.defaults_file,
+            "credentials": self.credentials,
+            "password_env": self.password_env,
+            "exclude_databases": list(self.exclude_databases),
         }
 
     def containers(self) -> list[str]:
@@ -109,7 +196,20 @@ class MysqlComponent(Component):
     def _credentials(self) -> str:
         return f"-u {shlex.quote(self.user)} " if self.user else ""
 
+    def _login(self) -> str:
+        return f"-u{shlex.quote(self.user or 'root')}"
+
     def _produce(self, database: str, zstd: str) -> str:
+        if self.credentials:
+            script = in_container(
+                "dump",
+                self.password_env,
+                f"{self._login()} {DUMP_FLAGS} --databases {shlex.quote(database)}",
+            )
+            return (
+                f"docker exec {shlex.quote(self.container)} sh -c "
+                f"{shlex.quote(script)} | {zstd}"
+            )
         line = (
             f"mysqldump {self._first()}{self._credentials()}{DUMP_FLAGS} "
             f"--databases {shlex.quote(database)} | {zstd}"
@@ -119,6 +219,13 @@ class MysqlComponent(Component):
             if self.container
             else line
         )
+
+    def _listing(self) -> list[str]:
+        if self.credentials:
+            args = f"{self._login()} -N -B -e {shlex.quote(LIST_DATABASES)}"
+            script = in_container("client", self.password_env, args)
+            return ["docker", "exec", self.container, "sh", "-c", script]
+        return self._argv("mysql", "-N", "-B", "-e", LIST_DATABASES)
 
     def _argv(self, *rest: str) -> list[str]:
         prefix = ["docker", "exec", self.container] if self.container else []
@@ -141,7 +248,7 @@ class MysqlComponent(Component):
         else:
             try:
                 answer = ctx.probe.capture(
-                    self._argv("mysql", "-N", "-B", "-e", LIST_DATABASES),
+                    self._listing(),
                     what=f"listing the databases of {self.name!r}",
                 )
             except BackupError as error:
@@ -150,6 +257,8 @@ class MysqlComponent(Component):
                 # change.
                 if self.defaults_file or "Access denied" not in str(error):
                     raise
+                if self.credentials:
+                    raise BackupError(f"{error}{STALE_PASSWORD}") from None
                 raise BackupError(
                     f"{error} - this component has no defaults_file, so mysql "
                     "ran without a password; set defaults_file in its "
@@ -165,6 +274,9 @@ class MysqlComponent(Component):
                     f"component {self.name!r}: mysql answered with no databases of "
                     "its own, which a server worth backing up does not do"
                 )
+        # After the emptiness check: a server that answered nothing is a
+        # failure, a server whose every database was excluded is a choice.
+        found = [db for db in found if db not in self.exclude_databases]
         for database in found:
             if not DATABASE_NAME.match(database):
                 raise BackupError(

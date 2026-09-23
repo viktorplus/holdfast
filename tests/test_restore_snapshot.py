@@ -138,6 +138,27 @@ def test_a_volume_recipe_with_an_impossible_name_is_refused(tmp_path, volume):
         {"type": "pg_database", "container": "a b", "user": "u", "database": "d"},
         {"type": "pg_globals", "container": "c", "user": "u;drop"},
         {"type": "mysql_database", "container": "c", "database": "a b"},
+        {
+            "type": "mysql_database",
+            "container": "c",
+            "database": "d",
+            "credentials": "other",
+        },
+        {
+            "type": "mysql_database",
+            "container": "c",
+            "database": "d",
+            "credentials": "container_env",
+            "password_env": "bad name",
+        },
+        {
+            "type": "mysql_database",
+            "container": "",
+            "database": "d",
+            "credentials": "container_env",
+            "password_env": "PW",
+        },
+        {"type": "mysql_database", "container": "c", "database": "d", "user": "a;b"},
     ],
 )
 def test_a_database_recipe_with_an_impossible_name_is_refused(tmp_path, recipe):

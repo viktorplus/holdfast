@@ -442,6 +442,60 @@ def test_a_mysql_dump_goes_back_through_the_client(tmp_path: Path):
     assert "mysql" in together
 
 
+def mysql_restore_lines(tmp_path: Path, **recipe) -> list[str]:
+    directory = snapshot_dir(
+        tmp_path,
+        artifact(
+            "shop.sql.zst",
+            {
+                "type": "mysql_database",
+                "container": "shop",
+                "database": "s",
+                **recipe,
+            },
+        ),
+    )
+    runs = Runs()
+    restoring(directory, tmp_path, run=runs)
+    return runs.lines
+
+
+def test_a_mysql_dump_goes_back_with_the_credentials_it_was_taken_with(
+    tmp_path: Path,
+):
+    """The dump read defaults_file, and the restore used to ignore it and run
+    into Access denied on the one night it was needed."""
+    ready, load = mysql_restore_lines(
+        tmp_path, defaults_file="/etc/holdfast/mysql.cnf", user="backup"
+    )
+
+    assert "mysqladmin --defaults-file=/etc/holdfast/mysql.cnf -u backup ping" in ready
+    assert "mysql --defaults-file=/etc/holdfast/mysql.cnf -u backup" in load
+
+
+def test_a_container_env_dump_goes_back_through_the_containers_password(
+    tmp_path: Path,
+):
+    ready, load = mysql_restore_lines(
+        tmp_path,
+        user="root",
+        credentials="container_env",
+        password_env="MYSQL_ROOT_PASSWORD",
+    )
+
+    for line in (ready, load):
+        assert "sh -c" in line
+        assert "MYSQL_PWD" in line
+    assert "docker exec -i shop sh -c" in load
+
+
+def test_a_mysql_dump_without_credentials_is_restored_as_before(tmp_path: Path):
+    ready, load = mysql_restore_lines(tmp_path)
+
+    assert "docker exec shop mysqladmin ping" in ready
+    assert load.endswith(" | docker exec -i shop mysql")
+
+
 def test_without_a_container_the_tools_are_run_directly(tmp_path: Path):
     directory = snapshot_dir(
         tmp_path,

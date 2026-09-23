@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .components.mysql import CONTAINER_ENV, ENV_NAME
 from .manifest import FORMAT, digest
 from .model import RestoreError
 
@@ -209,6 +210,21 @@ def _mysql_recipe(recipe: dict[str, Any], path: str) -> None:
     if container:
         _matching(str(container), DOCKER_NAME, "the container name", path)
     _matching(_text(recipe, "database", path), DATABASE_NAME, "the database", path)
+    _matching(str(recipe.get("user") or ""), USER_NAME, "the user name", path)
+    credentials = recipe.get("credentials") or ""
+    if credentials not in ("", CONTAINER_ENV):
+        raise RestoreError(
+            f"the credentials {credentials!r} in the recipe for {path} are not "
+            "a kind this holdfast knows how to use"
+        )
+    password_env = str(recipe.get("password_env") or "")
+    if password_env:
+        _matching(password_env, ENV_NAME, "the password variable", path)
+    if credentials and not container:
+        raise RestoreError(
+            f"the recipe for {path} reads the password from a container and "
+            "names no container"
+        )
 
 
 RECIPES: dict[str, Callable[[dict[str, Any], str], None]] = {
