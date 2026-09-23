@@ -99,5 +99,7 @@ def parse_inspect(text: str) -> list[Container]:
         raise BackupError(f"docker inspect did not return JSON: {exc}") from None
     if not isinstance(data, list):
         raise BackupError("docker inspect did not return a list of containers")
+    if not all(isinstance(entry, dict) for entry in data):
+        raise BackupError("docker inspect returned an entry that is not a container")
     containers = [_parse_container(entry) for entry in data]
     return sorted(containers, key=lambda c: c.name)

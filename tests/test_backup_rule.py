@@ -664,3 +664,139 @@ def test_a_path_exclusion_elsewhere_leaves_the_project_archive_alone():
     project = next(t for t in result.tables if t["type"] == "path")
     assert project["exclude"] == ["root/myapp/db_data"]
     assert skip_reason(result, "path /srv/other") == []
+
+
+# --------------------------------------------------------------------------
+# plan: what a kept path table must carve out of itself
+# --------------------------------------------------------------------------
+
+
+def table_for(result, path):
+    return next(t for t in result.tables if t["type"] == "path" and t["path"] == path)
+
+
+def test_a_kept_bind_above_a_project_leaves_the_project_and_its_database_out():
+    """A bind of /root would otherwise archive /root/myapp a second time,
+    raw database files included."""
+    result = planned(
+        [*wordpress_site(), nginx_with(bind_mount("/root", "/host"))], [WP_VOLUME]
+    )
+
+    assert table_for(result, "/root")["exclude"] == [
+        "root/myapp",
+        "root/myapp/db_data",
+    ]
+
+
+def db_on_bind(source):
+    return inspect_entry(
+        "myapp-db-1",
+        "mysql:8",
+        mounts=[bind_mount(source, "/var/lib/mysql")],
+        env=["MYSQL_ROOT_PASSWORD=secret"],
+    )
+
+
+@pytest.mark.parametrize(
+    "exclude", [(), ("container:myapp-db-1",)], ids=["dumped", "excluded"]
+)
+def test_a_kept_bind_above_a_database_data_bind_leaves_the_data_out(exclude):
+    result = planned(
+        [db_on_bind("/srv/db"), nginx_with(bind_mount("/srv", "/srv"))],
+        exclude=exclude,
+    )
+
+    assert table_for(result, "/srv")["exclude"] == ["srv/db"]
+
+
+def test_a_kept_bind_above_the_backup_root_leaves_the_snapshots_out():
+    result = planned(
+        [nginx_with(bind_mount("/opt", "/opt"))], backup_root="/opt/backups"
+    )
+
+    assert table_for(result, "/opt")["exclude"] == ["opt/backups"]
+
+
+def test_a_path_exclusion_inside_a_kept_bind_is_cut_out_of_its_archive():
+    result = planned(
+        [nginx_with(bind_mount("/srv/data", "/data"))],
+        exclude=["path:/srv/data/cache"],
+    )
+
+    assert table_for(result, "/srv/data")["exclude"] == ["srv/data/cache"]
+    assert skip_reason(result, "path /srv/data/cache") == ["excluded by you"]
+
+
+def test_a_path_exclusion_under_two_kept_tables_is_reported_once():
+    result = planned(
+        [*wordpress_site(), nginx_with(bind_mount("/root", "/host"))],
+        [WP_VOLUME],
+        exclude=["path:/root/myapp/logs"],
+    )
+
+    assert "root/myapp/logs" in table_for(result, "/root")["exclude"]
+    assert "root/myapp/logs" in table_for(result, "/root/myapp")["exclude"]
+    assert skip_reason(result, "path /root/myapp/logs") == ["excluded by you"]
+
+
+@pytest.mark.parametrize(
+    "item", ["path:/root/myapp/secret/", "path:/root/myapp//secret"]
+)
+def test_an_excluded_path_is_normalised_before_it_reaches_tar(item):
+    """GNU tar keeps root/myapp/secret/a under --exclude=root/myapp/secret/."""
+    assert parse_exclusions([item]).paths == ("/root/myapp/secret",)
+
+    result = planned(wordpress_site(), [WP_VOLUME], exclude=[item])
+
+    assert table_for(result, "/root/myapp")["exclude"] == [
+        "root/myapp/db_data",
+        "root/myapp/secret",
+    ]
+    assert skip_reason(result, "path /root/myapp/secret") == ["excluded by you"]
+
+
+# --------------------------------------------------------------------------
+# plan: exclusions that match nothing
+# --------------------------------------------------------------------------
+
+
+def test_exclusions_that_match_nothing_are_warned_about():
+    result = planned(
+        wordpress_site(),
+        [WP_VOLUME],
+        exclude=[
+            "volume:nope",
+            "path:/nowhere",
+            "database:myapp-wordpress-1/x",
+            "database:nope/x",
+            "container:nope",
+        ],
+    )
+
+    assert result.warnings == [
+        "backup.exclude: 'volume:nope' matches nothing on this machine",
+        "backup.exclude: 'path:/nowhere' matches nothing on this machine",
+        (
+            "backup.exclude: 'database:myapp-wordpress-1/x' matches nothing on "
+            "this machine"
+        ),
+        "backup.exclude: 'database:nope/x' matches nothing on this machine",
+        "backup.exclude: 'container:nope' matches nothing on this machine",
+    ]
+
+
+def test_exclusions_that_match_something_are_not_warned_about():
+    result = planned(
+        [*wordpress_site(), nginx_with(bind_mount("/srv/data", "/data"))],
+        [WP_VOLUME, "orphan"],
+        exclude=[
+            "volume:orphan",
+            f"volume:{WP_VOLUME}",
+            "path:/root/myapp/logs",
+            "path:/srv",
+            "database:myapp-db-1/tmp",
+            "container:myapp-wordpress-1",
+        ],
+    )
+
+    assert result.warnings == []

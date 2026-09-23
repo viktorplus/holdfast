@@ -60,9 +60,21 @@ def backup_mode(cfg: Config) -> str:
 def plan_for(cfg: Config, probe: Any, declared: list[Component]) -> Plan:
     """What the rule finds on this machine, given what is already declared."""
     exclude = parse_exclusions(cfg.get("backup.exclude", []))
+    try:
+        containers = probe.inspect_containers()
+        volumes = probe.volumes()
+    except BackupError as exc:
+        # `holdfast init` defaults to auto, so on a host without Docker this
+        # is the first thing the operator sees; say where the switch is.
+        if backup_mode(cfg) != "auto":
+            raise
+        raise BackupError(
+            f'{exc} - backup.mode is "auto"; on a machine without Docker set '
+            'backup.mode = "manual"'
+        ) from None
     return rule_plan(
-        probe.inspect_containers(),
-        probe.volumes(),
+        containers,
+        volumes,
         exclude=exclude,
         declared=Declared.of(declared),
         backup_root=str(cfg.get("backup.root")),
@@ -106,7 +118,17 @@ def select(cfg: Config, probe: Any, components_file: Path | None = None) -> Sele
             sizes_mb[name] = sizes_mb.get(name, 0) + _size_of(probe, kind, where)
         # Left there by manual mode, most likely; an operator who switched
         # should hear that the list stopped counting, not find out later.
-        auto_warnings = []
+        auto_warnings = list(found.warnings)
+        # The rule leaves every volume to such a component, anonymous ones
+        # included, and the old form archives those by a name no new
+        # container will ever carry.
+        if Declared.of(declared).every_volume:
+            auto_warnings.append(
+                "a docker_volume component without volume or container takes "
+                "every volume by name, and anonymous volumes archived that way "
+                "cannot be restored into a new container; remove it and let "
+                'backup.mode = "auto" take the volumes'
+            )
         if components_file is not None and components_file.exists():
             auto_warnings.append(
                 f"{components_file} is not read in auto mode; delete it, or set "

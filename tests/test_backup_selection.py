@@ -9,7 +9,7 @@ from holdfast.backup.machine import parse_inspect
 from holdfast.backup.model import BackupError
 from holdfast.backup.registry import component_types
 from holdfast.backup.rule import Plan, Skip
-from holdfast.backup.selection import backup_mode, select
+from holdfast.backup.selection import backup_mode, plan_for, select
 
 
 class Machine:
@@ -227,6 +227,59 @@ def test_auto_without_a_components_file_has_no_warnings(tmp_path: Path):
     selection = select(cfg, Machine(), components_file=tmp_path / "components.toml")
 
     assert selection.warnings == []
+
+
+class NoDocker(Machine):
+    def inspect_containers(self):
+        raise BackupError("listing the containers: docker is not on PATH")
+
+
+def test_auto_without_docker_says_to_switch_to_manual():
+    cfg = config(**{"backup.mode": "auto"}, component=[])
+
+    with pytest.raises(BackupError) as caught:
+        select(cfg, NoDocker())
+
+    assert str(caught.value) == (
+        "listing the containers: docker is not on PATH"
+        ' - backup.mode is "auto"; on a machine without Docker set '
+        'backup.mode = "manual"'
+    )
+
+
+def test_discover_in_manual_without_docker_gets_the_plain_error():
+    with pytest.raises(BackupError) as caught:
+        plan_for(config(), NoDocker(), [])
+
+    assert str(caught.value) == "listing the containers: docker is not on PATH"
+
+
+def test_auto_passes_on_the_rules_warnings():
+    cfg = config(**{"backup.mode": "auto", "backup.exclude": ["container:nope"]})
+
+    selection = select(cfg, Machine())
+
+    assert selection.warnings == [
+        "backup.exclude: 'container:nope' matches nothing on this machine"
+    ]
+
+
+def test_auto_warns_about_an_every_volume_docker_volume():
+    cfg = config(
+        **{"backup.mode": "auto"},
+        component=[{"type": "docker_volume", "name": "volumes"}],
+    )
+
+    selection = select(cfg, Machine())
+
+    assert selection.warnings == [
+        (
+            "a docker_volume component without volume or container takes every "
+            "volume by name, and anonymous volumes archived that way cannot be "
+            "restored into a new container; remove it and let "
+            'backup.mode = "auto" take the volumes'
+        )
+    ]
 
 
 def test_a_components_file_that_cannot_be_read_is_a_backup_error(tmp_path: Path):

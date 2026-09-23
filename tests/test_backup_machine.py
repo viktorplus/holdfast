@@ -98,6 +98,11 @@ def test_a_json_value_that_is_not_a_list_is_a_backup_error():
         parse_inspect(json.dumps({"not": "a list"}))
 
 
+def test_an_entry_that_is_not_an_object_is_a_backup_error():
+    with pytest.raises(BackupError, match="docker inspect"):
+        parse_inspect(json.dumps([1]))
+
+
 # --------------------------------------------------------------------------
 # Probe.inspect_containers
 # --------------------------------------------------------------------------

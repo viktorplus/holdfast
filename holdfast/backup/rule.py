@@ -32,7 +32,7 @@ from __future__ import annotations
 import posixpath
 import re
 from collections.abc import Callable, Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from .machine import Container
@@ -103,7 +103,10 @@ def parse_exclusions(items: Any) -> Exclusions:
                 raise BackupError(
                     f"backup.exclude: {item!r} has to name an absolute path"
                 )
-            paths.append(value)
+            # Normalised here, once: GNU tar still archives a folder named in
+            # --exclude with a trailing slash, and "//" would never compare
+            # equal to the paths Docker reports.
+            paths.append(posixpath.normpath("/" + value.lstrip("/")))
         elif kind == "database":
             container, has_slash, database = value.partition("/")
             if not has_slash:
@@ -240,6 +243,7 @@ class Plan:
     tables: list[dict[str, Any]]  # [[component]] tables, in order
     skipped: list[Skip]
     measure: list[tuple[str, str, str]]  # (component name, "path"|"volume", what)
+    warnings: list[str] = field(default_factory=list)
 
 
 def _data_dir(container: Container, kind: str) -> str:
@@ -374,6 +378,32 @@ def plan(
             projects[c.working_dir] = c.project or posixpath.basename(
                 posixpath.normpath(c.working_dir)
             )
+    taken: list[str] = []  # bind sources kept as path tables, filled below
+    reported: set[str] = set()  # excluded paths that already have a Skip line
+
+    def carve(kept: str) -> list[str]:
+        """What a kept path table has to leave out of its own archive.
+
+        Everything below it that the rule reports as not taken, or taken by
+        another table: a database's live data (dumped, declared or excluded,
+        a copy of its files is no backup either way), the operator's path
+        exclusions, the other project directories, the snapshots, and the
+        other kept binds. Without this a bind of /root would archive
+        /root/myapp a second time with its raw database files, and a bind of
+        /opt would archive the backups being written into /opt/backups.
+        """
+        root = posixpath.normpath(kept)
+        inside = {
+            posixpath.normpath(p)
+            for p in [*data_binds, *exclude.paths, *projects, backup_root, *taken]
+            if under(p, root) and posixpath.normpath(p) != root
+        }
+        for p in exclude.paths:
+            if p in inside and p not in reported:
+                reported.add(p)
+                skipped.append(Skip(f"path {p}", "excluded by you"))
+        return sorted({p.lstrip("/") for p in inside})
+
     for wd in sorted(projects):
         what = f"compose project {projects[wd]} ({wd})"
         if exclude.path(wd):
@@ -384,23 +414,8 @@ def plan(
             skipped.append(Skip(what, "the project directory is not on this machine"))
         else:
             name = name_for("project-" + slug(projects[wd]))
-            # A path the operator excluded inside the project is cut out of
-            # its archive; the rest of the project is still worth keeping.
-            carved = [p for p in exclude.paths if under(p, wd) and p != wd]
-            skipped.extend(Skip(f"path {p}", "excluded by you") for p in carved)
             tables.append(
-                {
-                    "type": "path",
-                    "name": name,
-                    "path": wd,
-                    "exclude": sorted(
-                        {
-                            s.lstrip("/")
-                            for s in [*data_binds, *carved]
-                            if under(s, wd) and s != wd
-                        }
-                    ),
-                }
+                {"type": "path", "name": name, "path": wd, "exclude": carve(wd)}
             )
             measure.append((name, "path", wd))
 
@@ -463,7 +478,6 @@ def plan(
         },
         key=lambda s: (len(s), s),
     )
-    taken: list[str] = []
     for source in sources:
         if source in data_binds:
             reason = "database data, covered by the dump"
@@ -483,10 +497,39 @@ def plan(
             reason = "declared by hand"
         else:
             name = name_for("mount-" + slug(source))
-            tables.append({"type": "path", "name": name, "path": source, "exclude": []})
+            tables.append(
+                {"type": "path", "name": name, "path": source, "exclude": carve(source)}
+            )
             measure.append((name, "path", source))
             taken.append(source)
             continue
         skipped.append(Skip(f"bind mount {source}", reason))
 
-    return Plan(tables=tables, skipped=skipped, measure=measure)
+    # An exclusion that matches nothing is most likely a typo, and a typo
+    # here means something the operator wanted left out is being kept.
+    places = [
+        *projects,
+        *(m.source for c in containers for m in c.mounts if m.kind == "bind"),
+    ]
+    known_volumes = set(volumes) | set(users)
+    names = {c.name for c in containers}
+    database_containers = {c.name for c in containers if database_kind(c.image)}
+    unmatched = [
+        *(f"volume:{v}" for v in sorted(exclude.volumes) if v not in known_volumes),
+        *(
+            f"path:{p}"
+            for p in exclude.paths
+            if not any(under(p, where) or under(where, p) for where in places)
+        ),
+        *(
+            f"database:{c}/{d}"
+            for c, d in sorted(exclude.databases)
+            if c not in database_containers
+        ),
+        *(f"container:{c}" for c in sorted(exclude.containers) if c not in names),
+    ]
+    warnings = [
+        f"backup.exclude: {item!r} matches nothing on this machine"
+        for item in unmatched
+    ]
+    return Plan(tables=tables, skipped=skipped, measure=measure, warnings=warnings)
