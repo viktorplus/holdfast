@@ -5,8 +5,9 @@ that has it open, produces data that is neither the old set nor the new one.
 So the containers a restore touches go down first and come back up after.
 
 Which containers those are comes from two places. A database recipe names its
-container, because the component declared one. A volume names nothing - a
-volume says nothing about who mounts it - so Docker is asked, and asked about
+container, because the component declared one, and so does the recipe of an
+unnamed volume. A named volume names nothing - a volume says nothing about who
+mounts it - so Docker is asked, and asked about
 stopped containers too: a stopped one will be started again, and it must not
 come back to a volume that was replaced underneath it.
 """
@@ -43,6 +44,11 @@ def _for(record: Record, probe, pg_container: str | None) -> list[str]:
             return [pg_container]
         return [declared] if declared else []
     if record.kind == "docker_volume":
+        # An unnamed volume's recipe names its container; its old name would
+        # be a question about a volume this machine may never have had.
+        container = str(record.recipe.get("container") or "")
+        if container:
+            return [container]
         return probe.containers_using_volume(str(record.recipe.get("volume") or ""))
     return []
 

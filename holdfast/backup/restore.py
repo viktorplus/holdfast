@@ -352,7 +352,7 @@ def _lines_for(
     if record.kind == "path":
         return _path_lines(body, str(recipe.get("target") or "/"), root)
     if record.kind == "docker_volume":
-        return _volume_lines(body, str(recipe["volume"]), probe)
+        return _volume_lines(body, recipe, probe)
     container = pg_container or str(recipe.get("container") or "")
     if record.kind == "pg_globals":
         user = pg_user or str(recipe.get("user") or "")
@@ -387,12 +387,21 @@ def _path_lines(body: str, target: str, root: str) -> list[str]:
     return [f"mkdir -p -- {dest} && {body} | zstd -dc | tar -xf - -C {dest}"]
 
 
-def _volume_lines(body: str, volume: str, probe) -> list[str]:
-    probe.capture(
-        ["docker", "volume", "create", volume],
-        what=f"making sure the volume {volume!r} is there",
-        timeout=30,
-    )
+def _volume_lines(body: str, recipe: dict[str, Any], probe) -> list[str]:
+    container = str(recipe.get("container") or "")
+    if container:
+        # An unnamed volume gets a new random name on every machine compose
+        # brings the application up on, so the name it had when the snapshot
+        # was taken belongs to a volume nothing mounts. The data goes into the
+        # one the container has now, and creating a volume would be wrong.
+        volume = probe.mounted_volume(container, str(recipe["destination"]))
+    else:
+        volume = str(recipe["volume"])
+        probe.capture(
+            ["docker", "volume", "create", volume],
+            what=f"making sure the volume {volume!r} is there",
+            timeout=30,
+        )
     where = probe.volume_mountpoint(volume)
     if not Path(where).is_dir():
         raise RestoreError(

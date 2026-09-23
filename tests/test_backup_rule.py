@@ -1,5 +1,4 @@
 import json
-from types import SimpleNamespace
 
 import pytest
 from support import (
@@ -566,13 +565,7 @@ def test_a_bind_declared_by_hand_is_not_added_again():
 
 
 def declared_volume(**fields):
-    # The explicit docker_volume form arrives in task 6; `Declared.of` reads
-    # these fields by name, so a stand-in with the same attributes is enough.
-    return SimpleNamespace(
-        type="docker_volume",
-        name="hand",
-        **{"volume": "", "container": "", "destination": "", **fields},
-    )
+    return component_types()["docker_volume"].from_config({"name": "hand", **fields})
 
 
 @pytest.mark.parametrize(

@@ -12,6 +12,7 @@ class FakeProbe:
         self.users = users or {}
         self.refuse = set(refuse)
         self.ran: list[list[str]] = []
+        self.asked: list[str] = []
 
     def capture(self, argv, *, what: str, timeout: int = 60, env=None) -> str:
         self.ran.append(list(argv))
@@ -20,6 +21,7 @@ class FakeProbe:
         return ""
 
     def containers_using_volume(self, name: str) -> list[str]:
+        self.asked.append(name)
         return list(self.users.get(name, []))
 
 
@@ -51,6 +53,16 @@ def test_a_volume_has_no_declaration_so_docker_is_asked():
     records = [record("docker_volume", volume="uploads")]
 
     assert owners(records, probe) == ["web", "worker"]
+
+
+def test_an_unnamed_volume_is_owned_by_the_container_its_recipe_names():
+    """The volume's old name is gone on a new machine, so asking Docker who
+    uses it would answer nobody."""
+    probe = FakeProbe()
+    records = [record("docker_volume", container="app-web-1", destination="/data")]
+
+    assert owners(records, probe) == ["app-web-1"]
+    assert probe.asked == []
 
 
 def test_a_path_recipe_owns_nothing():

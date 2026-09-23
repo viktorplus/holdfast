@@ -133,6 +133,27 @@ def test_a_volume_recipe_with_an_impossible_name_is_refused(tmp_path, volume):
 @pytest.mark.parametrize(
     "recipe",
     [
+        {"type": "docker_volume", "container": "c", "destination": "data"},
+        {"type": "docker_volume", "container": "c", "destination": "/a/../b"},
+        {"type": "docker_volume", "container": "a b", "destination": "/data"},
+        {"type": "docker_volume", "container": "c"},
+    ],
+)
+def test_an_unnamed_volume_recipe_that_could_land_anywhere_is_refused(tmp_path, recipe):
+    with pytest.raises(RestoreError):
+        load_snapshot(a_snapshot(tmp_path, artifact("a.bin", recipe)))
+
+
+def test_an_unnamed_volume_recipe_is_accepted(tmp_path):
+    recipe = {"type": "docker_volume", "container": "app-web-1", "destination": "/data"}
+    snapshot = load_snapshot(a_snapshot(tmp_path, artifact("a.bin", recipe)))
+
+    assert snapshot.records[0].recipe == recipe
+
+
+@pytest.mark.parametrize(
+    "recipe",
+    [
         {"type": "pg_database", "container": "c", "user": "u"},
         {"type": "pg_database", "container": "c", "user": "u", "database": "a/b"},
         {"type": "pg_database", "container": "a b", "user": "u", "database": "d"},

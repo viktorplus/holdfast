@@ -1,3 +1,4 @@
+import shlex
 from pathlib import Path
 
 import pytest
@@ -377,6 +378,42 @@ def test_a_volume_is_emptied_and_never_merged_into(tmp_path: Path):
     assert "rm -rf" in together
     assert "refusing" in together
     assert "tar -xf -" in together
+
+
+ANONYMOUS = {"type": "docker_volume", "container": "app-web-1", "destination": "/data"}
+
+
+def test_an_unnamed_volume_goes_into_the_one_its_container_has_now(tmp_path: Path):
+    """compose gives the volume a new random name on every machine; the old
+    name is a volume nothing mounts."""
+    mount = tmp_path / "mount"
+    mount.mkdir()
+    directory = snapshot_dir(tmp_path, artifact("v.tar.zst", ANONYMOUS))
+    probe = SnapshotProbe(
+        mounted={("app-web-1", "/data"): "fresh"}, mountpoints={"fresh": str(mount)}
+    )
+    runs = Runs()
+    restoring(directory, tmp_path, probe=probe, run=runs)
+
+    assert runs.lines[-1].endswith(f"tar -xf - -C {shlex.quote(str(mount))}")
+    assert not [
+        argv for argv in probe.ran if argv[:3] == ["docker", "volume", "create"]
+    ]
+    assert ["docker", "stop", "app-web-1"] in probe.ran
+
+
+def test_an_unnamed_volume_without_its_container_asks_for_the_application_first(
+    tmp_path: Path,
+):
+    directory = snapshot_dir(tmp_path, artifact("v.tar.zst", ANONYMOUS))
+    probe = SnapshotProbe()
+
+    with pytest.raises(RestoreError) as caught:
+        restoring(directory, tmp_path, probe=probe)
+
+    assert "PARTIALLY RESTORED" in str(caught.value)
+    assert "docker compose up -d" in str(caught.value)
+    assert ["docker", "start", "app-web-1"] in probe.ran
 
 
 def test_a_volume_whose_storage_cannot_be_read_is_refused(tmp_path: Path):

@@ -192,7 +192,16 @@ def _path_recipe(recipe: dict[str, Any], path: str) -> None:
 
 
 def _volume_recipe(recipe: dict[str, Any], path: str) -> None:
-    _matching(_text(recipe, "volume", path), DOCKER_NAME, "the volume name", path)
+    if not recipe.get("container"):
+        _matching(_text(recipe, "volume", path), DOCKER_NAME, "the volume name", path)
+        return
+    _matching(_text(recipe, "container", path), DOCKER_NAME, "the container name", path)
+    destination = _text(recipe, "destination", path)
+    if not destination.startswith("/") or ".." in Path(destination).parts:
+        raise RestoreError(
+            f"the docker_volume recipe for {path} has a destination {destination!r} "
+            "that is not an absolute path inside the container"
+        )
 
 
 def _postgres_recipe(recipe: dict[str, Any], path: str) -> None:

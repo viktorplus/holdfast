@@ -125,9 +125,10 @@ def snapshot_dir(tmp_path: Path, *artifacts: dict, **manifest) -> Path:
 class SnapshotProbe:
     """A machine the restore can talk to, without one being there."""
 
-    def __init__(self, users=None, mountpoints=None, refuse=()):
+    def __init__(self, users=None, mountpoints=None, refuse=(), mounted=None):
         self.users = users or {}
         self.mountpoints = mountpoints or {}
+        self.mounted = mounted or {}
         self.refuse = set(refuse)
         self.ran: list[list[str]] = []
 
@@ -144,6 +145,16 @@ class SnapshotProbe:
 
     def volume_mountpoint(self, name: str) -> str:
         return self.mountpoints[name]
+
+    def mounted_volume(self, container: str, destination: str) -> str:
+        from holdfast.backup.model import BackupError
+
+        if (container, destination) not in self.mounted:
+            raise BackupError(
+                f"the container {container!r} has no volume at {destination}; "
+                "bring the application up first (docker compose up -d) and try again"
+            )
+        return self.mounted[(container, destination)]
 
 
 # --------------------------------------------------------------------------

@@ -242,6 +242,7 @@ class FakeProbe:
         mountpoints=None,
         sizes=None,
         fails: str | None = None,
+        mounted=None,
     ):
         self.output = output
         self.running = set(running)
@@ -249,6 +250,7 @@ class FakeProbe:
         self.mountpoints = mountpoints or {}
         self.sizes = sizes or {}
         self.fails = fails
+        self.mounted = mounted or {}
         self.asked: list[list[str]] = []
 
     def capture(self, argv, *, what: str, timeout: int = 60, env=None) -> str:
@@ -269,6 +271,9 @@ class FakeProbe:
 
     def directory_size_mb(self, path: str) -> int:
         return self.sizes.get(path, 1)
+
+    def mounted_volume(self, container: str, destination: str) -> str:
+        return self.mounted[(container, destination)]
 
 
 def ctx_with(probe: FakeProbe) -> BuildContext:
@@ -875,3 +880,81 @@ def test_the_manifest_records_the_rule_that_decided_what_was_taken(tmp_path):
         "exclude": ["pg_data"],
         "max_mb": 256,
     }
+
+
+def test_a_volume_named_by_hand_is_one_artifact_named_after_it(tmp_path):
+    probe = volumes_on(tmp_path, "uploads", "other")
+    artifacts = build("docker_volume", name="uploads", volume="uploads").artifacts(
+        ctx_with(probe)
+    )
+
+    assert [a.name for a in artifacts] == ["docker-volumes/uploads.tar.zst"]
+    assert artifacts[0].recipe == {"type": "docker_volume", "volume": "uploads"}
+    assert f"-C {shlex.quote(str(tmp_path / 'uploads'))} ." in artifacts[0].produce
+    assert artifacts[0].check == "zstd -dc | tar -tf - >/dev/null"
+
+
+def test_an_unnamed_volume_is_found_through_its_container(tmp_path):
+    """Its name is random and changes on the next machine; the container and
+    the path inside it are what stays the same."""
+    anonymous = "a1" * 32
+    (tmp_path / "anon").mkdir()
+    probe = FakeProbe(
+        mounted={("app-web-1", "/data"): anonymous},
+        mountpoints={anonymous: str(tmp_path / "anon")},
+    )
+    component = build(
+        "docker_volume", name="web-data", container="app-web-1", destination="/data"
+    )
+    artifacts = component.artifacts(ctx_with(probe))
+
+    assert [a.name for a in artifacts] == ["docker-volumes/app-web-1--data.tar.zst"]
+    assert artifacts[0].recipe == {
+        "type": "docker_volume",
+        "container": "app-web-1",
+        "destination": "/data",
+    }
+    assert f"-C {shlex.quote(str(tmp_path / 'anon'))} ." in artifacts[0].produce
+    assert component.containers() == ["app-web-1"]
+
+
+def test_an_explicit_volume_whose_storage_cannot_be_read_stops_the_backup(tmp_path):
+    probe = FakeProbe(mountpoints={"uploads": str(tmp_path / "gone")})
+    with pytest.raises(BackupError, match="rootless"):
+        build("docker_volume", name="uploads", volume="uploads").artifacts(
+            ctx_with(probe)
+        )
+
+
+def test_the_manifest_records_which_volume_was_named(tmp_path):
+    component = build(
+        "docker_volume", name="web-data", container="app-web-1", destination="/data"
+    )
+
+    assert component.describe() == {
+        "type": "docker_volume",
+        "name": "web-data",
+        "volume": "",
+        "container": "app-web-1",
+        "destination": "/data",
+    }
+    assert build("docker_volume", name="volumes").containers() == []
+
+
+@pytest.mark.parametrize(
+    ("table", "words"),
+    [
+        ({"volume": "uploads", "exclude": ["x"]}, "exclude and max_mb belong"),
+        ({"container": "c", "destination": "/d", "max_mb": 5}, "exclude and max_mb"),
+        ({"volume": "uploads", "container": "c", "destination": "/d"}, "not both"),
+        ({"container": "c"}, "destination"),
+        ({"destination": "/d"}, "destination"),
+        ({"volume": "../escape"}, "stored safely"),
+        ({"container": "a b", "destination": "/d"}, "stored safely"),
+        ({"container": "c", "destination": "data"}, "destination"),
+        ({"container": "c", "destination": "/a/../b"}, "destination"),
+    ],
+)
+def test_an_explicit_volume_that_cannot_be_taken_is_refused(table, words):
+    with pytest.raises(BackupError, match=words):
+        build("docker_volume", name="one", **table)
