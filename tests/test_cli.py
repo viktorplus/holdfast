@@ -94,6 +94,28 @@ def test_init_refuses_without_a_mode():
     assert caught.value.code == 2
 
 
+def test_init_fresh_writes_the_chosen_backup_mode(tmp_path, capsys):
+    code = main(
+        [
+            "--config-dir",
+            str(tmp_path),
+            "init",
+            "--fresh",
+            "--backup-mode",
+            "manual",
+        ]
+    )
+    assert code == 0
+    text = (tmp_path / "holdfast.toml").read_text(encoding="utf-8")
+    assert 'mode = "manual"' in text
+
+
+def test_init_refuses_an_unknown_backup_mode():
+    with pytest.raises(SystemExit) as caught:
+        main(["init", "--fresh", "--backup-mode", "nonsense"])
+    assert caught.value.code == 2
+
+
 def _audit_config(config_dir: Path, state_dir: Path, extra: str = "") -> None:
     config_dir.mkdir(parents=True, exist_ok=True)
     (config_dir / "holdfast.toml").write_text(

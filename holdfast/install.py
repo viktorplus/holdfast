@@ -78,26 +78,32 @@ def _write(config_dir: Path, data: dict[str, Any]) -> Path:
     return path
 
 
-def _skeleton(host_label: str | None) -> dict[str, Any]:
+def _skeleton(host_label: str | None, backup_mode: str = "auto") -> dict[str, Any]:
     return {
         "host_label": host_label or default_host_label(),
         "collection": "",
         "alerts": {"chat_id": ""},
         "offsite": {"remote": ""},
         "encryption": {"recipients": []},
+        "backup": {"mode": backup_mode},
         "api": {"token": generate_api_token()},
     }
 
 
-def init_fresh(config_dir: Path, host_label: str | None = None) -> Path:
-    return _write(config_dir, _skeleton(host_label))
+def init_fresh(
+    config_dir: Path, host_label: str | None = None, backup_mode: str = "auto"
+) -> Path:
+    return _write(config_dir, _skeleton(host_label, backup_mode))
 
 
 def init_join(
-    config_dir: Path, profile_path: Path, host_label: str | None = None
+    config_dir: Path,
+    profile_path: Path,
+    host_label: str | None = None,
+    backup_mode: str = "auto",
 ) -> Path:
     profile = load_profile(profile_path)
-    data = _skeleton(host_label)
+    data = _skeleton(host_label, backup_mode)
     data["collection"] = profile.get("collection", "")
     for block in ("alerts", "offsite", "encryption"):
         if block in profile:

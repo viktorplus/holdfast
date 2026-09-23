@@ -48,6 +48,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="how this machine signs itself (default: hostname)",
     )
+    init_cmd.add_argument(
+        "--backup-mode",
+        choices=["auto", "manual"],
+        default="auto",
+        help="how the backup decides what to keep: worked out at every run "
+        "(auto) or written down by backup --discover (manual)",
+    )
     backup_cmd = commands.add_parser("backup", help="make a snapshot of this machine")
     # One shows what this machine could declare, the other what the declaration
     # would do. Asking for both at once is asking two different questions.
@@ -162,9 +169,11 @@ def main(argv: list[str] | None = None) -> int:
         config_dir = Path(args.config_dir)
         try:
             if args.fresh:
-                path = init_fresh(config_dir, args.host_label)
+                path = init_fresh(config_dir, args.host_label, args.backup_mode)
             else:
-                path = init_join(config_dir, Path(args.join), args.host_label)
+                path = init_join(
+                    config_dir, Path(args.join), args.host_label, args.backup_mode
+                )
         except (InstallError, ProfileError, OSError) as exc:
             # OSError too: /etc/holdfast needs root, and the very first
             # command a reader runs should explain itself, not traceback.

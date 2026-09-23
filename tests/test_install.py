@@ -39,6 +39,34 @@ def test_fresh_falls_back_to_the_hostname(tmp_path: Path):
     assert data["host_label"] == default_host_label()
 
 
+def test_fresh_defaults_to_auto_backup_mode(tmp_path: Path):
+    path = init_fresh(tmp_path, host_label="web-1")
+    data = tomllib.loads(path.read_text(encoding="utf-8"))
+    assert data["backup"]["mode"] == "auto"
+
+
+def test_fresh_can_be_told_manual_backup_mode(tmp_path: Path):
+    path = init_fresh(tmp_path, host_label="web-1", backup_mode="manual")
+    data = tomllib.loads(path.read_text(encoding="utf-8"))
+    assert data["backup"]["mode"] == "manual"
+
+
+def test_join_defaults_to_auto_backup_mode(tmp_path: Path):
+    profile = _profile(tmp_path, 'collection = "prod"\n')
+    path = init_join(tmp_path / "etc", profile, host_label="web-2")
+    data = tomllib.loads(path.read_text(encoding="utf-8"))
+    assert data["backup"]["mode"] == "auto"
+
+
+def test_join_can_be_told_manual_backup_mode(tmp_path: Path):
+    profile = _profile(tmp_path, 'collection = "prod"\n')
+    path = init_join(
+        tmp_path / "etc", profile, host_label="web-2", backup_mode="manual"
+    )
+    data = tomllib.loads(path.read_text(encoding="utf-8"))
+    assert data["backup"]["mode"] == "manual"
+
+
 def test_fresh_leaves_the_shared_blocks_empty(tmp_path: Path):
     """A standalone machine shares nothing until someone says otherwise."""
     path = init_fresh(tmp_path, host_label="web-1")
