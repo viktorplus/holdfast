@@ -415,7 +415,11 @@ def plan(
         ):
             skipped.append(Skip(what, "declared by hand"))
         else:
-            container, destination = mounted[0]
+            # Name the volume after a container that is kept: one exists,
+            # since a volume whose every user is excluded was skipped above.
+            container, destination = next(
+                user for user in mounted if user[0] not in exclude.containers
+            )
             if _ANONYMOUS_VOLUME.fullmatch(v):
                 name = name_for(f"volume-{slug(container)}-{slug(destination)}")
                 tables.append(

@@ -1,4 +1,5 @@
 import json
+from types import SimpleNamespace
 
 import pytest
 from support import (
@@ -487,3 +488,108 @@ def test_a_stopped_container_still_has_its_volume_taken():
     assert result.tables == [
         {"type": "docker_volume", "name": "volume-uploads", "volume": "uploads"}
     ]
+
+
+def test_a_shared_anonymous_volume_is_named_after_the_container_that_is_kept():
+    shared = "c3" * 32
+    result = planned(
+        [
+            inspect_entry("a-sidecar", "busybox", mounts=[volume_mount(shared, "/x")]),
+            inspect_entry("web-1", "nginx", mounts=[volume_mount(shared, "/data")]),
+        ],
+        [shared],
+        exclude=["container:a-sidecar"],
+    )
+
+    assert result.tables == [
+        {
+            "type": "docker_volume",
+            "name": "volume-web-1-data",
+            "container": "web-1",
+            "destination": "/data",
+        }
+    ]
+
+
+def test_excluding_a_mysql_container_without_a_password_is_the_way_out():
+    result = planned(
+        [mysql_entry(["MYSQL_DATABASE=wordpress"])],
+        exclude=["container:myapp-db-1"],
+    )
+
+    assert result.tables == []
+    assert skip_reason(result, "database container myapp-db-1") == ["excluded by you"]
+
+
+def test_a_bind_inside_a_project_directory_is_left_to_the_project():
+    web = inspect_entry(
+        "myapp-web-1",
+        "nginx",
+        project="myapp",
+        working_dir="/root/myapp",
+        mounts=[bind_mount("/root/myapp/uploads", "/uploads")],
+    )
+
+    result = planned([web])
+
+    assert skip_reason(result, "bind mount /root/myapp/uploads") == [
+        "inside a compose project directory"
+    ]
+
+
+def test_a_bind_missing_here_is_skipped():
+    result = planned(
+        [nginx_with(bind_mount("/srv/data", "/data"))],
+        exists=lambda p: p != "/srv/data",
+    )
+
+    assert result.tables == []
+    assert skip_reason(result, "bind mount /srv/data") == ["not on this machine"]
+
+
+def test_an_excluded_bind_is_skipped():
+    result = planned(
+        [nginx_with(bind_mount("/srv/data", "/data"))], exclude=["path:/srv"]
+    )
+
+    assert result.tables == []
+    assert skip_reason(result, "bind mount /srv/data") == ["excluded by you"]
+
+
+def test_a_bind_declared_by_hand_is_not_added_again():
+    path = component_types()["path"].from_config({"name": "srv", "path": "/srv"})
+
+    result = planned([nginx_with(bind_mount("/srv/data", "/data"))], declared=[path])
+
+    assert result.tables == []
+    assert skip_reason(result, "bind mount /srv/data") == ["declared by hand"]
+
+
+def declared_volume(**fields):
+    # The explicit docker_volume form arrives in task 6; `Declared.of` reads
+    # these fields by name, so a stand-in with the same attributes is enough.
+    return SimpleNamespace(
+        type="docker_volume",
+        name="hand",
+        **{"volume": "", "container": "", "destination": "", **fields},
+    )
+
+
+@pytest.mark.parametrize(
+    "declared",
+    [
+        lambda: component_types()["docker_volume"].from_config({"name": "volumes"}),
+        lambda: declared_volume(volume="uploads"),
+        lambda: declared_volume(container="nginx", destination="/uploads"),
+    ],
+    ids=["every volume", "by name", "by container and destination"],
+)
+def test_a_volume_declared_by_hand_is_not_added_again(declared):
+    result = planned(
+        [nginx_with(volume_mount("uploads", "/uploads"))],
+        ["uploads"],
+        declared=[declared()],
+    )
+
+    assert result.tables == []
+    assert skip_reason(result, "volume uploads") == ["declared by hand"]
