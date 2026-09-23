@@ -60,7 +60,7 @@ quietly falling back to the file the operator was overriding.
 | `encryption.recipients_file` | `""` | machine file | a file with one recipient per line, added to the list above rather than replacing it |
 | `component` | `[]` | machine file, as `[[component]]` tables | what this machine keeps by hand, in the order it is kept; in `auto` mode, on top of what the rule finds. See [backup.md](backup.md) |
 | `backup.mode` | `""` | machine file; written by `holdfast init --backup-mode`, `auto` unless told otherwise | `auto`: the rule works out what a Docker host keeps at every backup. `manual`: the backup takes `[[component]]` plus `components.toml`, which `holdfast backup --discover` writes. Empty means `manual`, the behaviour of every installation before 0.3.0 |
-| `backup.exclude` | `[]` | machine file | what the rule must not take, as `"volume:<name>"`, `"path:<absolute path>"`, `"database:<container>/<database>"` or `"container:<name>"`. Checked in both modes; a malformed entry stops the run |
+| `backup.exclude` | `[]` | machine file | what the rule must not take, as `"volume:<name>"`, `"path:<absolute path>"`, `"database:<container>/<database>"` or `"container:<name>"`. A `path:` inside a compose project directory is cut out of that project's archive. Checked in both modes; a malformed entry stops the run |
 | `backup.root` | `"/opt/backups"` | machine file | where snapshots land: one directory per run, named by timestamp |
 | `backup.retention_days` | `7` | machine file | snapshots older than this many days are deleted; `0` turns rotation off. This means what it says - `backup_s1` kept them a day longer |
 | `backup.min_free_gb` | `8` | machine file | refuse to start with less than this free, before anything is written - and, in `auto` mode, refuse a run whose estimated size would leave less than this behind |
@@ -233,7 +233,7 @@ is rewritten whole on every `--discover`. See [backup.md](backup.md).
 | `mysql` | `container` | `""` | as above |
 | `mysql` | `user` | `""` | passed as `-u`; often unnecessary with a defaults file. The rule sets `root` |
 | `mysql` | `databases` | `["*"]` | as above; the server's own schemas - `information_schema`, `performance_schema`, `sys`, `mysql` - are never dumped |
-| `mysql` | `defaults_file` | `""` | a my.cnf-style file the tools read themselves. holdfast never reads it |
+| `mysql` | `defaults_file` | `""` | a my.cnf-style file the tools read themselves, passed as their first argument; in a container, to whichever of the mariadb or mysql clients it has. holdfast never reads it |
 | `mysql` | `credentials` | `""` | `"container_env"`: the password is the one in the container's own environment, expanded inside the container. Needs `container`; not together with `defaults_file` |
 | `mysql` | `password_env` | `""` | with `credentials`, the name of the variable holding the password, e.g. `MYSQL_ROOT_PASSWORD`; a `_FILE` name is read as a file inside the container; empty means no password |
 | `mysql` | `exclude_databases` | `[]` | databases never dumped, even with `["*"]` |

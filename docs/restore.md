@@ -20,7 +20,8 @@ worth restoring at all.
 
 `verify` reads every artifact through the key and through its own format check
 — an archive's table of contents, a dump's signature — and writes nothing but
-the journal. It checks every artifact rather than stopping at the first
+the journal. Run by a user who cannot write the journal, it still checks and
+answers with its exit code, and says on stderr that the record was lost. It checks every artifact rather than stopping at the first
 failure: a second run in the middle of an incident is another half hour, and
 the answer wanted then is the whole list. It checks the artifacts no recipe can
 put back as well, because those bytes are in the copy too and a copy is either
@@ -71,6 +72,9 @@ who mounts it — so Docker is asked, and asked about stopped containers too: a
 stopped one will be started again, and it must not come back to a volume that
 was replaced underneath it.
 
+A container that will not stop ends the restore instead of being skipped,
+because the next step writes into files it has open.
+
 ## An anonymous volume
 
 A volume compose created without a name gets a random one, and a different one
@@ -97,16 +101,15 @@ named volume is restored by its name, and created if it is not there.
 A dump goes back in with the credentials it came out with. A recipe with
 `credentials = "container_env"` loads through the container's own shell and
 the variable its recipe names, exactly as the dump ran; a recipe with a
-`defaults_file` passes it to `mysqladmin` and `mysql` as the first flag. A
+`defaults_file` passes it as the first flag - in a container to whichever of
+`mariadb-admin`/`mysqladmin` and `mariadb`/`mysql` the container has, on the
+host to `mysqladmin` and `mysql`. A
 restore on a new machine therefore needs the database container started with
 the same variable, or the same file at the same path inside it.
 
 The server's `mysql` schema - users and grants - is not in a dump taken by
 0.3.0 or later, so a restored database is used through the users the new
 container was started with.
-
-A container that will not stop ends the restore instead of being skipped,
-because the next step writes into files it has open.
 
 ## When it fails in the middle
 

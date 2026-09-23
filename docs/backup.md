@@ -76,7 +76,7 @@ in the backup's output and in the manifest's `skipped` list:
 | `database data, covered by the dump` | the directory a database container keeps its files in |
 | `excluded by you` | named in `backup.exclude`, directly or through its container |
 | `declared by hand` | a component in `holdfast.toml` already covers it |
-| `system` | a bind mount of `/`, `/proc`, `/sys`, `/dev`, `/run`, `/var/run`, `/var/lib/docker`, `/etc/localtime`, `/etc/timezone`, or any socket |
+| `system` | a bind mount of `/`, `/proc`, `/sys`, `/dev`, `/run`, `/var/run`, `/var/lib/docker`, `/etc/localtime`, `/etc/timezone`, or any path ending in `.sock` |
 | `the snapshots themselves` | inside `backup.root` |
 | `inside a compose project directory` | already in that project's archive |
 | `inside another bind mount already taken` | already in that mount's archive |
@@ -111,14 +111,16 @@ exclude = [
 | Kind | Leaves out |
 |---|---|
 | `volume:<name>` | one volume, named or anonymous |
-| `path:<absolute path>` | a project directory or a bind mount source at or under that path |
+| `path:<absolute path>` | a project directory or a bind mount source at or under that path; a subdirectory inside a project directory is cut out of that project's archive |
 | `database:<container>/<database>` | one database; the container's others are still dumped |
 | `container:<name>` | its dumps, its bind mounts, and its volumes unless another container uses them |
 
-`path:` does not cut a subdirectory out of a project archive: a project is
-taken whole or not at all. Declare the project by hand as a `path` component
-with its own `exclude` for that. `container:` does not leave out the
-container's compose project, which belongs to every service in it.
+`path:/root/myapp/logs`, inside the project directory `/root/myapp`, keeps
+the project and leaves `logs` out of its archive: the project's command gains
+`--exclude=root/myapp/logs`, and the skipped list says
+`path /root/myapp/logs: excluded by you`. `path:/root/myapp` leaves the whole
+project out. `container:` does not leave out the container's compose project,
+which belongs to every service in it.
 
 An unknown kind, an empty value or a relative path is a configuration error,
 in both modes, not a silent skip.
@@ -283,7 +285,10 @@ The container's variable goes stale in one way: the image reads it once, when
 the data directory is first created, so a root password changed afterwards is
 not in it. The refusal says so, and the answer is `defaults_file`. With it,
 the server reads its own credentials file, and the configuration carries the
-path to that file, which is not a secret:
+path to that file, which is not a secret. In a container the client is again
+chosen there, `mariadb-dump` or `mysqldump` (`mariadb` or `mysql` to list and
+to restore), with `--defaults-file` as its first argument, where these tools
+accept it:
 
 ```toml
 [[component]]
@@ -349,8 +354,14 @@ Per component: its name, type, where it came from (`rule`, `holdfast.toml` or
 `components.toml`) and, for the rule's, the estimated size; then each artifact
 and the exact line that will produce it. After them, what was not taken and
 why, the estimate, and any warnings. A dry run refuses what the backup would
-refuse, so a clean one means the configuration is sound - though not that
-every container will answer tonight.
+refuse on the configuration - an invalid component or exclusion, a Docker
+that does not answer, a database that turns its login away, two artifacts
+for one file. What the backup checks on the machine just before it writes, it
+reports as warnings starting `the backup would refuse:` and carries on: a
+missing `bash` or encryption tool, and - only if `backup.root` already
+exists, since a dry run creates nothing - too little free space or too little
+room for the estimate. A clean dry run is still not a promise that every
+container will answer tonight.
 
 ## A snapshot
 

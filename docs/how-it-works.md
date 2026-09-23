@@ -22,7 +22,7 @@ the details.
 | `holdfast init --fresh` / `--join PROFILE` | the profile, if any | `holdfast.toml` | 0, or 1 if it could not |
 | `holdfast config check` | `holdfast.toml`, the environment | nothing | 0 complete, 1 something missing |
 | `holdfast audit` | the filesystem, `/proc`, Docker, the journal | `last.json` | 1 if any check failed, else 0 |
-| `holdfast backup --discover` | `holdfast.toml`, Docker | in `manual` mode `components.toml` (the old one kept as `.prev`); in `auto` mode nothing | 0, or 1 on a bad configuration |
+| `holdfast backup --discover` | `holdfast.toml`; Docker only in `manual` mode | in `manual` mode `components.toml` (the old one kept as `.prev`); in `auto` mode nothing | 0, or 1 on a bad configuration |
 | `holdfast backup --dry-run` | `holdfast.toml`, Docker in `auto` mode, `components.toml` in `manual` mode | nothing (prints what is taken, what is not and why, and the command lines) | 0, or 1 on a bad configuration |
 | `holdfast backup` | the same, and what the components name | a snapshot, the journal, the offsite copy | 0, or 1 on failure |
 | `holdfast restore list` | a snapshot's manifest | nothing | 0, or 1 on an unreadable snapshot |

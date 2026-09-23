@@ -12,10 +12,10 @@ configuration file:
   it by hand.
 - **A backup.** `holdfast backup` works out what matters on a Docker host -
   or takes a declared list of it: directories, PostgreSQL and MySQL
-  databases, Docker volumes, the output of any command - and turns it into
-  one encrypted snapshot, and sends it to a
-  second place with rclone. `holdfast restore` checks a snapshot and puts it
-  back, in the order that works.
+  databases, Docker volumes, the output of any command - turns it into one
+  encrypted snapshot, and sends that to a second place with rclone.
+  `holdfast restore` checks a snapshot and puts it back, in the order that
+  works.
 
 It is Python with no dependencies beyond the standard library. It runs on the
 server it protects, needs no central server, and keeps everything it remembers
@@ -97,8 +97,8 @@ holdfast backup --dry-run    # what is taken, what is not and why, and each comm
 holdfast backup
 ```
 
-On a Docker host `holdfast init` sets `backup.mode = "auto"`: every backup
-works out what to keep from what Docker runs - databases as dumps, compose
+`holdfast init` sets `backup.mode = "auto"` by default: on a Docker host
+every backup works out what to keep from what Docker runs - databases as dumps, compose
 project directories, volumes, bind mounts - and names what it leaves out.
 Anything outside Docker is declared in `holdfast.toml` as a `[[component]]`.
 In `manual` mode, `holdfast backup --discover` writes that list to
