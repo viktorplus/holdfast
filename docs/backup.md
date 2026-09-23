@@ -30,6 +30,11 @@ A configuration with no `backup.mode` - every installation made before 0.3.0 -
 is `manual`, and behaves as it did: only the components it declares, and the
 machine is not looked at.
 
+`auto` needs Docker. On a machine without it every run stops on the first
+question the rule asks, and the error ends with `backup.mode is "auto"; on a
+machine without Docker set backup.mode = "manual"`: set the line to
+`"manual"`, or pass `--backup-mode manual` to `holdfast init`.
+
 `auto` is right for most machines: a container or a volume added this
 afternoon is in tonight's snapshot without anybody editing anything. `manual`
 is for a machine whose snapshot should change only after a person has read
@@ -63,6 +68,14 @@ It takes four things:
 3. **volumes**, named or anonymous, mounted by any container, running or
    stopped - one artifact per volume however many containers share it;
 4. **bind mounts outside the project directories**, files or directories.
+
+A folder the rule keeps - a project directory or a bind mount - leaves out of
+its archive everything below it that is reported as not taken or is taken on
+its own: a database's data directory (dumped, declared by hand or excluded), a
+`path:` exclusion, another project directory, `backup.root`, another kept bind
+mount. A bind of `/root` therefore does not archive the project `/root/myapp`
+a second time with its raw database files, and a bind of `/opt` does not
+archive the snapshots being written to `/opt/backups`.
 
 Hosts outside Docker are not looked at. What the machine keeps outside Docker
 is declared by hand, as a `path` or `command` component.
@@ -111,7 +124,7 @@ exclude = [
 | Kind | Leaves out |
 |---|---|
 | `volume:<name>` | one volume, named or anonymous |
-| `path:<absolute path>` | a project directory or a bind mount source at or under that path; a subdirectory inside a project directory is cut out of that project's archive |
+| `path:<absolute path>` | a project directory or a bind mount source at or under that path; a subdirectory inside a kept project directory or bind mount is cut out of that archive |
 | `database:<container>/<database>` | one database; the container's others are still dumped |
 | `container:<name>` | its dumps, its bind mounts, and its volumes unless another container uses them |
 
@@ -122,8 +135,16 @@ the project and leaves `logs` out of its archive: the project's command gains
 project out. `container:` does not leave out the container's compose project,
 which belongs to every service in it.
 
+A path is normalised before it is used: `path:/root/myapp/logs/` and
+`path:/root/myapp//logs` are `path:/root/myapp/logs`. Left as written, a
+trailing slash would make tar archive the folder after all.
+
 An unknown kind, an empty value or a relative path is a configuration error,
-in both modes, not a silent skip.
+in both modes, not a silent skip. An entry that matches nothing on this
+machine - no such volume or container, a `database:` whose container is not a
+database, a path under nothing the rule looked at - is a warning in `auto`
+mode, in the dry run and in the backup's output: it is most likely a typo,
+and a typo here keeps what it meant to leave out.
 
 ### What the components are called
 
@@ -193,7 +214,26 @@ schema is no longer dumped, and a MySQL restore now uses the same
 `[backup]`, remove the `[[component]]` tables it now covers - typically the
 database container, the every-volume `docker_volume` table and the project
 `path` - keep the ones for data outside Docker, delete a 0.2 draft left at
-`components.toml`, and read `holdfast backup --dry-run`.
+`components.toml`, and read `holdfast backup --dry-run`. An every-volume
+`docker_volume` table left in place in `auto` mode is a warning at every run:
+the rule leaves every volume to it, anonymous ones included, and that form
+archives an anonymous volume by a name no new container will ever have, so
+it cannot be restored into one.
+
+Also different for a 0.2 configuration, whatever its mode:
+
+- a database `user` with anything outside `A-Z a-z 0-9 _ . -` is refused
+  when the configuration is loaded;
+- a MySQL component with both `container` and `defaults_file` runs through
+  `sh -c` in the container, which chooses `mariadb-dump` or `mysqldump`
+  there, so the container needs a `sh`;
+- `holdfast backup --discover` needs a configuration that loads, and writes
+  `components.toml` instead of printing a draft; a 0.2 draft saved at that
+  path is ignored with a warning;
+- `holdfast backup --dry-run` prints the mode, each component with where it
+  came from, and what was not taken - scripts reading the old output need
+  looking at;
+- the manifest carries a `skipped` list, empty unless the rule ran.
 
 A MySQL credentials file that 0.2 had mounted into the database container is
 not needed by the rule. If it sits inside the project directory it is
@@ -283,7 +323,13 @@ the container over its local socket, as the role from `POSTGRES_USER`.
 
 The container's variable goes stale in one way: the image reads it once, when
 the data directory is first created, so a root password changed afterwards is
-not in it. The refusal says so, and the answer is `defaults_file`. With it,
+not in it. It can also be different from the start: the official `mysql`
+images put `MYSQL_ROOT_PASSWORD` into SQL at first start, where a backslash
+is read as an escape, so a root password containing `\` is not the one the
+server keeps (seen on `mysql:5.7` and `mysql:8.4`; `mariadb:11` keeps it as
+written). Either way the run stops on `Access denied` with the hint that the
+password in the container's environment was not accepted, and the answer is
+`defaults_file`. With it,
 the server reads its own credentials file, and the configuration carries the
 path to that file, which is not a secret. In a container the client is again
 chosen there, `mariadb-dump` or `mysqldump` (`mariadb` or `mysql` to list and

@@ -264,6 +264,12 @@ mode = "auto"
 Сменить его позже — поправить эту строку на `mode = "manual"` (или обратно).
 Больше ничего менять не нужно.
 
+`init` пишет `auto`, даже если флаг `--backup-mode` не указан. Режиму `auto`
+нужен Docker: на машине без него каждый бэкап остановится на первом же
+вопросе к Docker, и ошибка закончится словами `backup.mode is "auto"; on a
+machine without Docker set backup.mode = "manual"`. На такой машине ставьте
+`--backup-mode manual` при `init` или `mode = "manual"` в этой строке.
+
 > `config check` смотрит только на настройки установки. Она скажет «всё
 > готово» и тогда, когда бэкап запуститься не может: ни ключа, ни состава
 > копии она не проверяет. Готовность бэкапа показывает
@@ -460,7 +466,7 @@ exclude = [
 | Вид | Что исключает |
 |---|---|
 | `volume:<имя тома>` | один том: именованный или безымянный (тогда имя — 64 символа, см. ниже) |
-| `path:<абсолютный путь>` | папку проекта или папку, подключённую в контейнер, если она совпадает с этим путём или лежит внутри него; подпапку внутри папки проекта — вырезает из архива проекта |
+| `path:<абсолютный путь>` | папку проекта или папку, подключённую в контейнер, если она совпадает с этим путём или лежит внутри него; подпапку внутри взятой папки (проекта или подключённой) — вырезает из её архива |
 | `database:<контейнер>/<база>` | одну базу в контейнере; остальные базы этого контейнера дампятся |
 | `container:<имя контейнера>` | всё, что правило взяло бы из этого контейнера: дамп его баз, его тома (если их не подключает ещё кто-то), его подключённые папки |
 
@@ -473,6 +479,8 @@ exclude = [
   исключает проект целиком.
 - `container:` не убирает папку compose-проекта этого контейнера: она
   общая для всех сервисов проекта. Исключить её — `path:/root/myapp`.
+- Путь приводится к обычному виду: `path:/root/myapp/logs/` и
+  `path:/root/myapp//logs` — то же, что `path:/root/myapp/logs`.
 - Имя безымянного тома — 64 шестнадцатеричных символа. Бесхозные тома
   видны в `not taken:`; имя тома, который подключает контейнер, покажет
   `docker inspect -f '{{ range .Mounts }}{{ .Name }} {{ .Destination }}{{ "\n" }}{{ end }}' myapp-wordpress-1`
@@ -482,7 +490,11 @@ exclude = [
 корня) останавливает бэкап и `--dry-run` с сообщением, какой элемент
 неверен, — молча он не пропускается. После правки снова запустите
 `holdfast backup --dry-run`: исключённое должно появиться в `not taken:` с
-причиной `excluded by you`.
+причиной `excluded by you`. Элемент, которому на машине ничего не
+соответствует (нет такого тома или контейнера, контейнер в `database:` — не
+база, путь не касается ничего, что видит правило), в режиме `auto` даёт
+предупреждение `backup.exclude: '...' matches nothing on this machine` —
+скорее всего, это опечатка.
 
 ### Как добавить то, что вне Docker
 
@@ -541,17 +553,23 @@ exclude = []
 PostgreSQL внутри контейнера пускает по локальному сокету без пароля.
 `--dry-run` на шаге 7 уже показал, что дамп будет снят.
 
-Дальше — только для двух исключений:
+Дальше — только для трёх исключений:
 
 - **пароль root меняли после первого запуска контейнера.** Образ читает
   `MYSQL_ROOT_PASSWORD` один раз, когда создаёт базу; в переменной остался
   старый пароль, и бэкап остановится на `Access denied ... the password in
   the container's environment was not accepted`;
+- **в пароле root есть обратный слеш (`\`), а образ — `mysql`.** Официальные
+  образы MySQL при первом запуске подставляют `MYSQL_ROOT_PASSWORD` в
+  SQL-запрос, и `\` там читается как экранирование: пароль, который хранит
+  сервер, получается не таким, как в переменной (проверено на `mysql:5.7` и
+  `mysql:8.4`; `mariadb:11` сохраняет пароль как есть). Бэкап остановится на
+  той же ошибке `Access denied`, что и в первом случае;
 - **образ без этих переменных** (например, база запущена с
   `MYSQL_RANDOM_ROOT_PASSWORD`, или это собственный образ). Бэкап
   остановится на `its root password is not in its environment`.
 
-В обоих случаях нужен файл доступа, который `mysqldump` прочитает сам внутри
+Во всех трёх случаях нужен файл доступа, который `mysqldump` прочитает сам внутри
 контейнера. holdfast по-прежнему не хранит пароль: в его конфигурации будет
 только путь к файлу.
 
@@ -1173,8 +1191,11 @@ project directory` — то есть он попадает в архив про�
 | `encryption is on and no recipient is configured` | пуст `encryption.recipients` | шаг 6 |
 | `backup.mode is '...'; it is either "auto" or "manual"` | опечатка в `mode` | поправить строку в `[backup]` |
 | `backup.exclude: '...' is not one of volume:<...>, path:<...>, database:<...>, container:<...>` | неверный элемент `exclude` | шаг 7, «Как исключить лишнее» |
+| `... - backup.mode is "auto"; on a machine without Docker set backup.mode = "manual"` | режим `auto`, а Docker на машине нет или он не отвечает | без Docker — `mode = "manual"` (шаг 5); иначе — запустить Docker |
+| `backup.exclude: '...' matches nothing on this machine` | исключение ни с чем не совпало, скорее всего опечатка | сверить с `not taken:` и `docker ps -a`, `docker volume ls` |
+| `a docker_volume component without volume or container takes every volume by name, ...` | в режиме `auto` остался блок `docker_volume` из 0.2 | удалить блок (раздел «Переход с 0.2»), тома возьмёт правило |
 | `container 'myapp-db-1': its root password is not in its environment, so holdfast cannot reach the database; ...` | у контейнера базы нет переменной с паролем root | шаг 8; или исключить: `"container:myapp-db-1"` |
-| `... Access denied ... - the password in the container's environment was not accepted; ...` | пароль root меняли после первого запуска контейнера | шаг 8: `defaults_file` |
+| `... Access denied ... - the password in the container's environment was not accepted; ...` | пароль root меняли после первого запуска контейнера, или в нём есть `\` (образ `mysql`) | шаг 8: `defaults_file` |
 | `... Access denied ... - this component has no defaults_file, so mysql ran without a password; ...` | вы объявили `mysql` сами, без `defaults_file` | добавить `defaults_file` (шаг 8) или удалить блок — тогда базу возьмёт правило |
 | `component 'myapp-db-1': the container 'myapp-db-1' is not running, so there is nothing to dump` | контейнер базы остановлен | запустить его, или исключить: `"container:myapp-db-1"` |
 | `this snapshot is estimated at up to N MB before compression, /opt/backups has X GB free, and backup.min_free_gb asks for 8 to be left` | места после бэкапа осталось бы меньше порога | освободить место, исключить лишнее (шаг 7) или уменьшить `backup.min_free_gb` |

@@ -57,6 +57,20 @@ zstd_threads = 0
 # Held for the length of a run, so the nightly timer and a manual run cannot
 # each produce a snapshot at the same time.
 lock_file = "/run/holdfast-backup.lock"
+# "auto": at every backup, holdfast asks Docker what this machine runs and
+# keeps its databases as dumps, its compose project folders, its volumes and
+# its bind mounts, on top of the [[component]] tables below. "manual": only
+# those tables, plus components.toml if `holdfast backup --discover` wrote one.
+# `holdfast init` writes "auto"; a machine without Docker needs "manual". This
+# example lists its volumes by hand in the old every-volume form, which only
+# suits manual mode.
+mode = "manual"
+# What auto-discovery must not take, whichever the mode: "volume:<name>",
+# "path:<absolute path>", "database:<container>/<database>" or
+# "container:<name>". A path inside a folder that is kept is cut out of that
+# folder's archive. An entry that matches nothing on this machine is warned
+# about, because it is most likely a typo that keeps what it meant to leave.
+exclude = ["path:/root/myapp/logs"]
 
 [jobs]
 # What each job last did, and when it last did it successfully. Not under
@@ -175,8 +189,12 @@ command = ""
 # statement about what depends on what. `holdfast backup --dry-run` prints the
 # shell line each component produces, without producing anything.
 #
-# `holdfast backup --discover` looks this machine over and prints a first draft
-# of the list below, which is quicker to cross things out of than to write.
+# In "auto" mode this list is only what the rule cannot find by itself: what
+# Docker runs is worked out again at every backup, and `holdfast backup
+# --dry-run` shows what the next run takes. In "manual" mode this list is the
+# backup, and `holdfast backup --discover` writes what the rule finds to
+# components.toml beside this file, which every backup then reads with it; run
+# it again when the machine changes.
 
 [[component]]
 # A logical dump, not a copy of the data directory: a dump loads into another
