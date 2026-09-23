@@ -58,7 +58,7 @@ DEFAULTS: dict[str, Any] = {
         # Where snapshots land. One directory per run, named by timestamp.
         "root": "/opt/backups",
         # A snapshot older than this many days is deleted, and this means what
-        # it says - unlike backup_s1, where it kept them a day longer. Zero
+        # it says - unlike `find -mtime +N`, which keeps them a day longer. Zero
         # turns rotation off. The newest snapshot is never deleted, whatever
         # this says: a machine whose backup broke would otherwise lose its last
         # copy exactly on schedule.

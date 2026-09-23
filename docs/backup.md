@@ -530,11 +530,11 @@ retention_days = 7
 Snapshots older than `retention_days * 24` hours are deleted. Zero turns
 rotation off.
 
-**This is a day shorter than `backup_s1` was.** The older script used
-`find -mtime +N`, which is true only at N+1 full days, so `7` kept a snapshot
-for eight. A key-rotation runbook that counts the destruction date of an old
-key from this number has to be re-read against the new meaning rather than
-carried across.
+**The number means what it says.** Scripts that rotate with
+`find -mtime +N` keep a snapshot a day longer, because that test is true only
+at N+1 full days: `7` there keeps a snapshot for eight. A key-rotation runbook
+that counts the destruction date of an old key from this number has to use
+exactly `retention_days` days.
 
 Two things rotation will not do. It never deletes the newest snapshot, whatever
 the window says - a machine whose backup broke months ago would otherwise lose

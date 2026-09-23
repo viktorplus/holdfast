@@ -97,7 +97,7 @@ def test_an_unknown_tool_is_refused():
 
 
 def test_a_passphrase_is_refused_with_a_reason():
-    """Likely to be carried over from backup_s1.conf, so it says why not."""
+    """Likely to be carried over from an older backup script, so it says why not."""
     with pytest.raises(BackupError, match="passphrase"):
         Encryption.from_config(
             config(

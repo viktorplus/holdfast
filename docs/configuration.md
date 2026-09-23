@@ -62,7 +62,7 @@ quietly falling back to the file the operator was overriding.
 | `backup.mode` | `""` | machine file; written by `holdfast init --backup-mode`, `auto` unless told otherwise | `auto`: the rule works out what a Docker host keeps at every backup. `manual`: the backup takes `[[component]]` plus `components.toml`, which `holdfast backup --discover` writes. Empty means `manual`, the behaviour of every installation before 0.3.0 |
 | `backup.exclude` | `[]` | machine file | what the rule must not take, as `"volume:<name>"`, `"path:<absolute path>"`, `"database:<container>/<database>"` or `"container:<name>"`. A `path:` inside a kept project directory or bind mount is cut out of that archive. Checked in both modes; a malformed entry stops the run, and in `auto` mode one that matches nothing is a warning |
 | `backup.root` | `"/opt/backups"` | machine file | where snapshots land: one directory per run, named by timestamp |
-| `backup.retention_days` | `7` | machine file | snapshots older than this many days are deleted; `0` turns rotation off. This means what it says - `backup_s1` kept them a day longer |
+| `backup.retention_days` | `7` | machine file | snapshots older than this many days are deleted; `0` turns rotation off. This means what it says - unlike `find -mtime +N`, which keeps them a day longer |
 | `backup.min_free_gb` | `8` | machine file | refuse to start with less than this free, before anything is written - and, in `auto` mode, refuse a run whose estimated size would leave less than this behind |
 | `backup.zstd_level` | `10` | machine file | compression level |
 | `backup.zstd_threads` | `0` | machine file | compression threads; `0` means as many as there are cores |
