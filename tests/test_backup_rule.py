@@ -520,6 +520,53 @@ def test_excluding_a_mysql_container_without_a_password_is_the_way_out():
     assert skip_reason(result, "database container myapp-db-1") == ["excluded by you"]
 
 
+def test_an_excluded_databases_volume_is_excluded_not_covered_by_a_dump():
+    """No dump is taken for an excluded container, so its data volume must
+    not carry the "covered by the dump" reason - it is just as excluded as
+    the container itself."""
+    result = planned(
+        [mysql_entry(["MYSQL_ROOT_PASSWORD=secret"])],
+        ["db_data"],
+        exclude=["container:myapp-db-1"],
+    )
+
+    assert result.tables == []
+    assert skip_reason(result, "volume db_data") == ["excluded by you"]
+
+
+def test_an_excluded_databases_bind_is_excluded_not_covered_by_a_dump():
+    result = planned(
+        [
+            inspect_entry(
+                "myapp-db-1",
+                "mysql:8",
+                mounts=[bind_mount("/srv/db_data", "/var/lib/mysql")],
+                env=["MYSQL_ROOT_PASSWORD=secret"],
+            )
+        ],
+        exclude=["container:myapp-db-1"],
+    )
+
+    assert result.tables == []
+    assert skip_reason(result, "bind mount /srv/db_data") == ["excluded by you"]
+
+
+def test_a_declared_databases_volume_is_still_covered_by_the_dump():
+    mysql = component_types()["mysql"].from_config(
+        {"name": "db", "container": "myapp-db-1"}
+    )
+
+    result = planned(
+        [mysql_entry(["MYSQL_ROOT_PASSWORD=secret"])],
+        ["db_data"],
+        declared=[mysql],
+    )
+
+    assert skip_reason(result, "volume db_data") == [
+        "database data, covered by the dump"
+    ]
+
+
 def test_a_bind_inside_a_project_directory_is_left_to_the_project():
     web = inspect_entry(
         "myapp-web-1",
