@@ -198,9 +198,9 @@ class PostgresComponent(Component):
                     env=env or None,
                 )
             except BackupError as error:
-                # The --discover draft leaves defaults_file commented out, and
                 # psql's refusal does not say which line of holdfast.toml to
-                # change.
+                # change. The rule never sets defaults_file, and neither may a
+                # hand-written component, so psql had no password file.
                 if self.defaults_file or not any(
                     refusal in str(error) for refusal in PASSWORD_REFUSALS
                 ):

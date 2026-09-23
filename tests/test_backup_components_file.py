@@ -109,6 +109,18 @@ def test_write_leaves_the_file_readable_by_its_owner_only(tmp_path):
     assert path.stat().st_mode & 0o777 == 0o600
 
 
+@posix_only
+def test_the_previous_file_is_kept_private_too(tmp_path):
+    """A 0.2 draft the operator wrote at 0644 is still this file's content."""
+    path = tmp_path / "components.toml"
+    path.write_text('[[component]]\ntype = "path"\n', encoding="utf-8")
+    path.chmod(0o644)
+
+    write(path, TABLES)
+
+    assert (tmp_path / "components.toml.prev").stat().st_mode & 0o777 == 0o600
+
+
 def test_written_by_discover_looks_at_the_first_line_only(tmp_path):
     ours = tmp_path / "ours.toml"
     ours.write_text(render(TABLES), encoding="utf-8")

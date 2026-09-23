@@ -14,6 +14,7 @@ meant to be read and pasted, never backed up as it stood.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import shutil
 import tomllib
@@ -90,7 +91,12 @@ def write(path: Path, tables: list[dict[str, Any]]) -> list[dict[str, Any]]:
     except BackupError:
         previous = []
     if path.exists():
-        shutil.copyfile(path, path.with_name(path.name + ".prev"))
+        kept = path.with_name(path.name + ".prev")
+        shutil.copyfile(path, kept)
+        # The same content as components.toml, so the same 0600; copyfile
+        # would leave it at the umask. Windows ignores it, as in atomic.
+        with contextlib.suppress(OSError):
+            kept.chmod(0o600)
     atomic.write_text(path, text)
     return previous
 

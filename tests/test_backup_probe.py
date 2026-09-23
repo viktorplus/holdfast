@@ -138,12 +138,6 @@ def test_an_empty_directory_is_zero(tmp_path: Path):
     assert Probe().directory_size_mb(str(tmp_path)) == 0
 
 
-def test_containers_come_back_as_names_with_their_images(monkeypatch):
-    probe = probe_with(monkeypatch, Ran(stdout="db\tpostgres:16\nweb\tnginx\n\n"))
-
-    assert probe.containers() == [("db", "postgres:16"), ("web", "nginx")]
-
-
 def test_an_environment_carries_a_path_and_not_a_credential(monkeypatch):
     """A local psql is told where its password file is, and reads it itself."""
     ran = Ran(stdout="x")

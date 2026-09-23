@@ -263,9 +263,10 @@ class MysqlComponent(Component):
                     what=f"listing the databases of {self.name!r}",
                 )
             except BackupError as error:
-                # The --discover draft leaves defaults_file commented out, and
                 # mysql's refusal does not say which line of holdfast.toml to
-                # change.
+                # change. A hand-written component may have no defaults_file;
+                # one the rule found reads the password from its container,
+                # which stops working once the root password is changed.
                 if self.defaults_file or "Access denied" not in str(error):
                     raise
                 if self.credentials:

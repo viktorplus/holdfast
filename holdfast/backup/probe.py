@@ -83,20 +83,6 @@ class Probe:
         )
         return name in listed.splitlines()
 
-    def containers(self) -> list[tuple[str, str]]:
-        """Every running container as (name, image). Used only by --discover."""
-        listed = self.capture(
-            ["docker", "ps", "--format", "{{.Names}}	{{.Image}}"],
-            what="listing the running containers",
-            timeout=30,
-        )
-        found = []
-        for line in listed.splitlines():
-            name, _, image = line.partition("	")
-            if name.strip():
-                found.append((name.strip(), image.strip()))
-        return found
-
     def volumes(self) -> list[str]:
         listed = self.capture(
             ["docker", "volume", "ls", "--format", "{{.Name}}"],
