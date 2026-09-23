@@ -20,7 +20,7 @@ import shlex
 from dataclasses import dataclass
 from typing import Any
 
-from ..model import Artifact, BackupError, BuildContext, Component
+from ..model import USER_NAME, Artifact, BackupError, BuildContext, Component
 
 # A running PostgreSQL is asked which databases it has. Templates are excluded
 # because restoring one is not meaningful; the order makes the snapshot's
@@ -68,9 +68,15 @@ class PostgresComponent(Component):
         excluded = table.get("exclude_databases", [])
         if not isinstance(excluded, list):
             raise BackupError(f"component {name!r}: exclude_databases has to be a list")
+        user = cls._required(table, "user", name)
+        if not USER_NAME.match(user):
+            raise BackupError(
+                f"component {name!r}: the user {user!r} is not a name a restore "
+                "would accept"
+            )
         return cls(
             name=name,
-            user=cls._required(table, "user", name),
+            user=user,
             container=str(table.get("container") or ""),
             databases=tuple(str(item) for item in listed) or ("*",),
             globals=bool(table.get("globals", True)),

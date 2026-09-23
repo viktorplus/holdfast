@@ -25,13 +25,12 @@ from typing import Any
 
 from .components.mysql import CONTAINER_ENV, ENV_NAME
 from .manifest import FORMAT, digest
-from .model import RestoreError
+from .model import USER_NAME, RestoreError
 
 MANIFEST = "manifest.json"
 
 DOCKER_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 DATABASE_NAME = re.compile(r"^[A-Za-z0-9_.][A-Za-z0-9_.-]*$")
-USER_NAME = re.compile(r"^[A-Za-z0-9_.-]*$")
 
 NOTHING = "none"
 

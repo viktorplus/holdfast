@@ -289,6 +289,13 @@ def test_a_postgres_component_needs_a_user():
         build("postgres", name="db")
 
 
+def test_a_postgres_user_the_restore_would_refuse_is_refused_now():
+    """Otherwise the backup is green every night and the restore refuses the
+    recipe the one time it is read."""
+    with pytest.raises(BackupError, match="user"):
+        build("postgres", name="db", user="a;b")
+
+
 def test_postgres_without_a_container_runs_the_tools_directly():
     """Docker is optional; a machine without it is served in full."""
     probe = FakeProbe(output="app")
@@ -683,8 +690,13 @@ def test_a_container_env_dump_never_puts_the_password_on_the_command_line():
     probe = FakeProbe(output="shopdb", running={"c"})
     produce = a_container_env_mysql().artifacts(ctx_with(probe))[0].produce
 
-    assert produce.startswith("docker exec c sh -c ")
-    assert "-p" not in produce
+    assert produce.startswith("docker exec c sh -c '")
+    outer = shlex.split(produce)
+    script = outer[5]
+    # Expanded by the container's shell, so it reaches here only as a name.
+    assert 'export MYSQL_PWD="$MYSQL_ROOT_PASSWORD"' in script
+    for token in outer + shlex.split(script):
+        assert not token.startswith(("-p", "--password")), token
     assert "MYSQL_PWD" in produce
     assert "--databases" in produce
 
@@ -727,6 +739,8 @@ def test_a_refused_container_password_says_what_changed_it():
             "defaults_file",
         ),
         ({"container": "c", "exclude_databases": "tmp"}, "exclude_databases"),
+        ({"container": "c", "user": "a;b"}, "user"),
+        ({"container": "c", "password_env": "PW"}, "password_env"),
     ],
 )
 def test_a_mysql_declaration_that_cannot_work_is_refused(table, word):

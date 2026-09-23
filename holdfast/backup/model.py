@@ -20,6 +20,11 @@ from typing import Any, ClassVar
 
 NAME = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
+# A database user as a restore recipe may carry it. Here rather than in the
+# snapshot reader so that the components can refuse the same names when the
+# backup is declared, instead of the restore refusing them after the fact.
+USER_NAME = re.compile(r"^[A-Za-z0-9_.-]*$")
+
 
 def slug(text: str) -> str:
     """Turn a name a human or Docker chose into one NAME accepts.

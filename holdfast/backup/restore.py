@@ -12,6 +12,7 @@ import shlex
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from .. import jobs
 from .components.mysql import CONTAINER_ENV, in_container
@@ -457,7 +458,7 @@ def _database_lines(body: str, container: str, user: str, database: str) -> list
     ]
 
 
-def _mysql_lines(body: str, recipe: dict) -> list[str]:
+def _mysql_lines(body: str, recipe: dict[str, Any]) -> list[str]:
     """The same credentials the dump was taken with.
 
     A dump that needed a defaults file or the container's own password to come

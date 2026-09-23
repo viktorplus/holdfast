@@ -26,7 +26,7 @@ import shlex
 from dataclasses import dataclass
 from typing import Any
 
-from ..model import Artifact, BackupError, BuildContext, Component
+from ..model import USER_NAME, Artifact, BackupError, BuildContext, Component
 
 LIST_DATABASES = "show databases"
 
@@ -107,8 +107,14 @@ class MysqlComponent(Component):
             raise BackupError(f"component {name!r}: databases has to be a list")
         container = str(table.get("container") or "")
         defaults_file = str(table.get("defaults_file") or "")
+        user = str(table.get("user") or "")
         credentials = str(table.get("credentials") or "")
         password_env = str(table.get("password_env") or "")
+        if not USER_NAME.match(user):
+            raise BackupError(
+                f"component {name!r}: the user {user!r} is not a name a restore "
+                "would accept"
+            )
         if credentials not in ("", CONTAINER_ENV):
             raise BackupError(
                 f"component {name!r}: credentials can only be {CONTAINER_ENV!r}, "
@@ -118,6 +124,11 @@ class MysqlComponent(Component):
             raise BackupError(
                 f"component {name!r}: password_env {password_env!r} is not the "
                 "name of an environment variable"
+            )
+        if password_env and not credentials:
+            raise BackupError(
+                f"component {name!r}: password_env is read only with "
+                f"credentials = {CONTAINER_ENV!r}, and without it would be ignored"
             )
         if credentials and not container:
             raise BackupError(
@@ -135,7 +146,7 @@ class MysqlComponent(Component):
         return cls(
             name=name,
             container=container,
-            user=str(table.get("user") or ""),
+            user=user,
             databases=tuple(str(item) for item in listed) or ("*",),
             defaults_file=defaults_file,
             credentials=credentials,
