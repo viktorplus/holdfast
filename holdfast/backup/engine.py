@@ -155,14 +155,21 @@ def dry_run(cfg: Config, *, probe: Any, components_file: Path | None = None) -> 
     """
     selection = select(cfg, probe, components_file)
     encryption = Encryption.from_config(cfg)
-    ctx = _context(cfg, probe)
+    # The snapshot directory is only a base for comparing destinations here;
+    # nothing is created under it.
+    planned = _plan(
+        Path(str(cfg.get("backup.root"))) / "dry-run",
+        selection.components,
+        _context(cfg, probe),
+        encryption,
+    )
     lines = [f"mode: {selection.mode}"]
     for component in selection.components:
         about = f"{component.type}, from {selection.origins[component.name]}"
         if component.name in selection.sizes_mb:
             about += f", ~{selection.sizes_mb[component.name]} MB"
         lines.append(f"{component.name} ({about})")
-        for artifact in component.artifacts(ctx):
+        for artifact in (a for c, a in planned if c is component):
             lines.append(f"  {artifact.name}{encryption.suffix}")
             lines.append(f"    {encryption.wrap(artifact.produce)}")
     if selection.skipped:
@@ -188,12 +195,7 @@ def _fill(
 ) -> BackupResult:
     ctx = _context(cfg, probe)
     components = selection.components
-    planned = [
-        (component, artifact)
-        for component in components
-        for artifact in component.artifacts(ctx)
-    ]
-    _require_distinct(directory, planned, encryption)
+    planned = _plan(directory, components, ctx, encryption)
     records: list[dict[str, Any]] = []
     total = 0
     for component, artifact in planned:
@@ -230,6 +232,26 @@ def _context(cfg: Config, probe: Any) -> BuildContext:
         zstd_threads=int(cfg.get("backup.zstd_threads") or 0),
         probe=probe,
     )
+
+
+def _plan(
+    directory: Path,
+    components: list[Component],
+    ctx: BuildContext,
+    encryption: Encryption,
+) -> list[tuple[Component, Artifact]]:
+    """Every artifact the run will write, checked before the first one is.
+
+    Shared by the backup and the dry run, so the dry run cannot pass what the
+    backup would refuse.
+    """
+    planned = [
+        (component, artifact)
+        for component in components
+        for artifact in component.artifacts(ctx)
+    ]
+    _require_distinct(directory, planned, encryption)
+    return planned
 
 
 def _require_distinct(

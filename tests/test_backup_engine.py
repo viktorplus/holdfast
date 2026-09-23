@@ -17,7 +17,7 @@ from support import (
 
 from holdfast import jobs
 from holdfast.backup import BackupBusy, BackupError, engine
-from holdfast.backup.engine import GIGABYTE, rotate, run_backup, run_line
+from holdfast.backup.engine import GIGABYTE, dry_run, rotate, run_backup, run_line
 from holdfast.backup.machine import parse_inspect
 from holdfast.backup.manifest import build_manifest
 
@@ -578,12 +578,12 @@ def test_too_little_room_for_the_estimate_stops_it_before_anything_is_written(
 
 
 def test_no_estimate_asks_for_no_room(tmp_path: Path, monkeypatch):
+    """Even on a disk already below the minimum: that refusal is
+    _require_space's to make, and a manual run adds no estimate to it."""
     monkeypatch.setattr(
         engine.shutil,
         "disk_usage",
-        lambda _: shutil._ntuple_diskusage(
-            100 * GIGABYTE, 90 * GIGABYTE, 10 * GIGABYTE
-        ),
+        lambda _: shutil._ntuple_diskusage(100 * GIGABYTE, 95 * GIGABYTE, 5 * GIGABYTE),
     )
     engine._require_room(tmp_path, 0, 8)
 
@@ -604,3 +604,15 @@ def test_two_artifacts_with_one_name_stop_it_before_anything_is_written(
 
     assert runner.lines == []
     assert nothing_written(root)
+
+
+def test_the_dry_run_refuses_two_artifacts_with_one_name_too(tmp_path: Path):
+    """A dry run that passes what the backup then refuses would be a promise
+    the night breaks."""
+    _, cfg = setup(
+        tmp_path,
+        a_command("one", artifact="same.bin"),
+        a_command("two", artifact="same.bin"),
+    )
+    with pytest.raises(BackupError, match=r"'same\.bin'.*'one'.*'two'"):
+        dry_run(cfg, probe=None)
