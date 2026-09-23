@@ -1,0 +1,138 @@
+"""Choosing which components a backup actually runs, by mode.
+
+`manual` is what every installation did before 0.3.0: only what the operator
+wrote in `[[component]]`. `auto` adds whatever `rule.plan` finds running on
+the machine, on top of the same hand-written components - the rule already
+refuses to double anything `Declared.of` reports, so the two sources never
+collide on what they cover, only on what they choose to call it.
+
+`Selection` is the one thing the engine (task 8) and `--discover` (task 9)
+read from here: the components to back up, where each one came from, what
+auto-discovery decided not to take, and how much room the auto ones need
+before the run starts.
+"""
+
+from __future__ import annotations
+
+import os
+import tomllib
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+from ..config import Config
+from .model import BackupError, Component
+from .registry import components_from_tables
+from .rule import Declared, Plan, Skip, parse_exclusions
+from .rule import plan as rule_plan
+
+MODES = ("auto", "manual")
+
+
+@dataclass(frozen=True)
+class Selection:
+    """What a backup run backs up, and the bookkeeping behind that choice."""
+
+    mode: str
+    components: list[Component]
+    origins: dict[
+        str, str
+    ]  # component name -> "holdfast.toml" | "components.toml" | "rule"
+    skipped: list[Skip] = field(default_factory=list)
+    sizes_mb: dict[str, int] = field(default_factory=dict)  # component name -> MB
+
+    @property
+    def estimate_mb(self) -> int:
+        return sum(self.sizes_mb.values())
+
+
+def backup_mode(cfg: Config) -> str:
+    """ "" means "manual", the way every installation before 0.3.0 behaved."""
+    mode = cfg.get("backup.mode", "")
+    if mode == "":
+        return "manual"
+    if mode not in MODES:
+        raise BackupError(f'backup.mode is {mode!r}; it is either "auto" or "manual"')
+    return mode
+
+
+def plan_for(cfg: Config, probe: Any, declared: list[Component]) -> Plan:
+    """What the rule finds on this machine, given what is already declared."""
+    exclude = parse_exclusions(cfg.get("backup.exclude", []))
+    return rule_plan(
+        probe.inspect_containers(),
+        probe.volumes(),
+        exclude=exclude,
+        declared=Declared.of(declared),
+        backup_root=str(cfg.get("backup.root")),
+        exists=os.path.exists,
+    )
+
+
+def _size_of(probe: Any, kind: str, where: str) -> int:
+    if kind == "volume":
+        where = probe.volume_mountpoint(where)
+    return probe.directory_size_mb(where)
+
+
+def _read_component_tables(path: Path) -> list[Any]:
+    # Task 9 replaces this with components_file.read_tables; until it lands,
+    # this is the whole reader for components.toml.
+    with path.open("rb") as handle:
+        try:
+            data = tomllib.load(handle)
+        except tomllib.TOMLDecodeError as exc:
+            raise BackupError(f"{path} is not valid TOML: {exc}") from exc
+    return data.get("component", [])
+
+
+def _check_collision(name: str, declared_names: set[str], origin: str) -> None:
+    if name in declared_names:
+        raise BackupError(
+            f"two components are both named {name!r}: "
+            f"one in holdfast.toml, one from {origin}"
+        )
+
+
+def select(cfg: Config, probe: Any, components_file: Path | None = None) -> Selection:
+    """The components a backup run should back up, and why."""
+    mode = backup_mode(cfg)
+    # Parsed in every mode, right away, so a typo in the list is caught
+    # before anything else runs - not only once the mode becomes auto.
+    parse_exclusions(cfg.get("backup.exclude", []))
+
+    declared = components_from_tables(cfg.get("component", []))
+    declared_names = {c.name for c in declared}
+    origins: dict[str, str] = {c.name: "holdfast.toml" for c in declared}
+
+    if mode == "auto":
+        found = plan_for(cfg, probe, declared)
+        added = components_from_tables(found.tables)
+        for component in added:
+            _check_collision(component.name, declared_names, "rule")
+            origins[component.name] = "rule"
+        sizes_mb: dict[str, int] = {}
+        for name, kind, where in found.measure:
+            sizes_mb[name] = sizes_mb.get(name, 0) + _size_of(probe, kind, where)
+        return Selection(
+            mode=mode,
+            components=[*declared, *added],
+            origins=origins,
+            skipped=found.skipped,
+            sizes_mb=sizes_mb,
+        )
+
+    added = []
+    if components_file is not None and components_file.exists():
+        tables = _read_component_tables(components_file)
+        added = components_from_tables(tables)
+        for component in added:
+            _check_collision(component.name, declared_names, "components.toml")
+            origins[component.name] = "components.toml"
+    return Selection(
+        mode=mode,
+        components=[*declared, *added],
+        origins=origins,
+        skipped=[],
+        sizes_mb={},
+    )

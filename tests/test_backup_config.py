@@ -120,6 +120,8 @@ def test_the_defaults_carry_a_backup_section():
     assert cfg.get("encryption.enabled") is True
     assert cfg.get("encryption.tool") == "age"
     assert cfg.get("component") == []
+    assert cfg.get("backup.mode") == ""
+    assert cfg.get("backup.exclude") == []
 
 
 def test_the_shipped_example_is_a_configuration_that_actually_works():

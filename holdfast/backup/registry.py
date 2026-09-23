@@ -34,16 +34,18 @@ def component_types() -> dict[str, type[Component]]:
     return types
 
 
-def load_components(
-    cfg: Config, types: Mapping[str, type[Component]] | None = None
+def components_from_tables(
+    tables: Any, types: Mapping[str, type[Component]] | None = None
 ) -> list[Component]:
-    """The components declared in the configuration, in the declared order.
+    """Turn `[[component]]` tables into `Component`s, in the given order.
 
     ``types`` is a seam for the tests, which exercise this parser without
-    depending on which types happen to be implemented.
+    depending on which types happen to be implemented. Split out from
+    `load_components` so that `selection.py` can build components from a
+    list of tables that did not come from `holdfast.toml` - the rule's own
+    output, or a `components.toml` written by `--discover`.
     """
     known = dict(component_types() if types is None else types)
-    tables = cfg.get("component", [])
     if not isinstance(tables, list):
         raise BackupError("[[component]] must be a list of tables")
 
@@ -66,6 +68,13 @@ def load_components(
         seen.add(component.name)
         components.append(component)
     return components
+
+
+def load_components(
+    cfg: Config, types: Mapping[str, type[Component]] | None = None
+) -> list[Component]:
+    """The components declared in the configuration, in the declared order."""
+    return components_from_tables(cfg.get("component", []), types)
 
 
 def _type_name(table: Mapping[str, Any], index: int) -> str:

@@ -46,6 +46,15 @@ DEFAULTS: dict[str, Any] = {
     # [[component]] table; the types are listed in holdfast/backup/registry.py.
     "component": [],
     "backup": {
+        # "auto" backs up what the rule finds on this machine; "manual" (and
+        # the empty default) backs up only what [[component]] declares by
+        # hand, which is how every installation before 0.3.0 behaved.
+        "mode": "",
+        # The operator's own opt-outs from auto-discovery, one
+        # "kind:value" string per entry - see backup/rule.py for the kinds.
+        # Read and validated in manual mode too, so a typo in it is caught
+        # right away rather than only once the mode is switched to auto.
+        "exclude": [],
         # Where snapshots land. One directory per run, named by timestamp.
         "root": "/opt/backups",
         # A snapshot older than this many days is deleted, and this means what
