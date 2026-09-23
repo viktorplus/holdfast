@@ -45,7 +45,7 @@ def test_env_names_are_kept_but_values_are_not():
     db = next(c for c in containers if c.name == "myapp-db-1")
 
     assert "MYSQL_ROOT_PASSWORD" in db.env_names
-    assert "secret-value" not in repr(parse_inspect(json.dumps(wordpress_site())))
+    assert "secret-value" not in repr(containers)
 
 
 def test_pgdata_postgres_user_and_allow_empty_are_kept_with_their_values():
@@ -165,4 +165,23 @@ def test_no_matching_mount_names_the_fix():
     )
 
     with pytest.raises(BackupError, match="docker compose up -d"):
+        probe.mounted_volume("web-1", "/var/www/html")
+
+
+def test_a_non_json_mounts_answer_is_a_backup_error():
+    probe = FakeProbe(
+        {("docker", "inspect", "--format", "{{json .Mounts}}", "web-1"): "not json"}
+    )
+
+    with pytest.raises(BackupError, match="docker inspect"):
+        probe.mounted_volume("web-1", "/var/www/html")
+
+
+def test_a_mounts_answer_that_is_not_a_list_is_a_backup_error():
+    mounts = json.dumps({"not": "a list"})
+    probe = FakeProbe(
+        {("docker", "inspect", "--format", "{{json .Mounts}}", "web-1"): mounts}
+    )
+
+    with pytest.raises(BackupError, match="docker inspect"):
         probe.mounted_volume("web-1", "/var/www/html")

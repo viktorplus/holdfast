@@ -191,7 +191,19 @@ class Probe:
             what=f"inspecting the mounts of {container!r}",
             timeout=30,
         )
-        mounts = json.loads(text) if text else []
+        if text:
+            try:
+                mounts = json.loads(text)
+            except json.JSONDecodeError as exc:
+                raise BackupError(
+                    f"docker inspect did not return JSON for {container!r}'s mounts: {exc}"
+                ) from None
+            if not isinstance(mounts, list):
+                raise BackupError(
+                    f"docker inspect did not return a list of mounts for {container!r}"
+                )
+        else:
+            mounts = []
         for mount in mounts:
             if (
                 mount.get("Type") == "volume"
