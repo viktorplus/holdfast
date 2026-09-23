@@ -616,3 +616,48 @@ def test_the_dry_run_refuses_two_artifacts_with_one_name_too(tmp_path: Path):
     )
     with pytest.raises(BackupError, match=r"'same\.bin'.*'one'.*'two'"):
         dry_run(cfg, probe=None)
+
+
+# --------------------------------------------------------------------------
+# a components.toml that holdfast 0.2's --discover told operators to write
+# --------------------------------------------------------------------------
+
+
+def a_0_2_draft(tmp_path: Path) -> Path:
+    path = tmp_path / "components.toml"
+    path.write_text(
+        '[[component]]\ntype = "command"\nname = "draft"\nproduce = "printf x"\n',
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_a_0_2_draft_is_not_backed_up_and_the_run_says_so(tmp_path: Path):
+    _, cfg = setup(tmp_path, a_command("mine"))
+    draft = a_0_2_draft(tmp_path)
+
+    result = run_backup(cfg, runner=Runner(), now=WHEN, components_file=draft)
+
+    assert [a["component"] for a in result.artifacts] == ["mine"]
+    # First, not only: Windows adds one about the latest link it cannot make.
+    assert result.warnings[0] == (
+        f"{draft} was not written by holdfast backup --discover, so it is "
+        "ignored; merge what you need into holdfast.toml and delete it, or run "
+        "holdfast backup --discover to replace it"
+    )
+
+
+def test_the_dry_run_shows_the_same_warning(tmp_path: Path):
+    _, cfg = setup(tmp_path, a_command("mine"))
+    draft = a_0_2_draft(tmp_path)
+
+    text = dry_run(cfg, probe=None, components_file=draft)
+
+    assert "draft (" not in text
+    assert f"\nwarnings:\n  {draft} was not written by holdfast backup" in text
+
+
+def test_a_dry_run_without_warnings_has_no_warnings_block(tmp_path: Path):
+    _, cfg = setup(tmp_path, a_command("mine"))
+
+    assert "warnings:" not in dry_run(cfg, probe=None)

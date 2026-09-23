@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 from support import ORPHAN_VOLUME, WP_VOLUME, config, wordpress_site
 
+from holdfast.backup.components_file import HEADER, write
 from holdfast.backup.machine import parse_inspect
 from holdfast.backup.model import BackupError
 from holdfast.backup.registry import component_types
@@ -48,12 +49,7 @@ def a_path_component(name: str, path: str) -> dict:
 
 def write_components_toml(tmp_path: Path, *tables: dict) -> Path:
     path = tmp_path / "components.toml"
-    lines = []
-    for table in tables:
-        lines.append("[[component]]")
-        for key, value in table.items():
-            lines.append(f"{key} = {value!r}".replace("'", '"'))
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    write(path, list(tables))
     return path
 
 
@@ -110,6 +106,42 @@ def test_manual_ignores_a_components_file_that_does_not_exist(tmp_path: Path):
     selection = select(cfg, Machine(), components_file=tmp_path / "gone.toml")
 
     assert [c.name for c in selection.components] == ["a"]
+
+
+def test_manual_ignores_a_0_2_draft_and_says_why(tmp_path: Path):
+    """holdfast 0.2's --discover told operators to redirect its draft into
+    components.toml; 0.3 must not start backing that draft up unannounced."""
+    cfg = config(component=[a_path_component("a", "/etc/a")])
+    draft = tmp_path / "components.toml"
+    draft.write_text(
+        '[[component]]\ntype = "path"\nname = "b"\npath = "/etc/b"\n',
+        encoding="utf-8",
+    )
+
+    selection = select(cfg, Machine(), components_file=draft)
+
+    assert [c.name for c in selection.components] == ["a"]
+    assert selection.warnings == [
+        (
+            f"{draft} was not written by holdfast backup --discover, so it is "
+            "ignored; merge what you need into holdfast.toml and delete it, or run "
+            "holdfast backup --discover to replace it"
+        )
+    ]
+
+
+def test_manual_with_a_discover_file_has_no_warnings(tmp_path: Path):
+    components_file = write_components_toml(tmp_path, a_path_component("b", "/etc/b"))
+
+    assert select(config(), Machine(), components_file=components_file).warnings == []
+
+
+def test_a_broken_discover_file_is_an_error_naming_it(tmp_path: Path):
+    broken = tmp_path / "components.toml"
+    broken.write_text(HEADER + "[[component]\n", encoding="utf-8")
+
+    with pytest.raises(BackupError, match=r"components\.toml"):
+        select(config(), Machine(), components_file=broken)
 
 
 def test_an_unknown_mode_is_refused_by_select_too():

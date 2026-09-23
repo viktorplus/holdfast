@@ -6,7 +6,6 @@ from support import ORPHAN_VOLUME, needs_sh, posix_only
 
 import holdfast
 from holdfast import jobs
-from holdfast.backup import BackupError
 from holdfast.cli import main
 
 
@@ -454,26 +453,63 @@ def test_backup_discover_and_dry_run_are_different_questions():
     assert caught.value.code == 2
 
 
-def test_backup_discover_needs_no_configuration(tmp_path, capsys, monkeypatch):
-    """The command for a machine nobody has set up yet."""
+def _an_empty_docker_host(monkeypatch):
     import holdfast.backup.probe as probe_module
 
-    class Silent(probe_module.Probe):
-        def containers(self):
-            raise BackupError("listing the running containers: docker is not on PATH")
+    class Machine(probe_module.Probe):
+        def inspect_containers(self):
+            return []
 
         def volumes(self):
-            raise BackupError("listing the docker volumes: docker is not on PATH")
+            return [ORPHAN_VOLUME]
 
-    monkeypatch.setattr(probe_module, "Probe", Silent)
+    monkeypatch.setattr(probe_module, "Probe", Machine)
 
-    code = main(["--config-dir", str(tmp_path / "nothing"), "backup", "--discover"])
+
+def test_backup_discover_in_manual_writes_components_toml_into_the_config_dir(
+    tmp_path, capsys, monkeypatch
+):
+    """No holdfast.toml yet is still manual mode, and still a place to write."""
+    _an_empty_docker_host(monkeypatch)
+    directory = tmp_path / "etc"
+
+    code = main(["--config-dir", str(directory), "backup", "--discover"])
 
     out = capsys.readouterr().out
     assert code == 0
-    assert "A draft, not a configuration" in out
-    assert "docker is not on PATH" in out
-    assert not (tmp_path / "nothing").exists()
+    assert (directory / "components.toml").exists()
+    assert out.startswith(f"wrote {directory / 'components.toml'} (0 components)")
+    assert f"volume {ORPHAN_VOLUME}: no container uses it" in out
+
+
+def test_backup_discover_in_auto_writes_nothing(tmp_path, capsys, monkeypatch):
+    _an_empty_docker_host(monkeypatch)
+    directory = tmp_path / "etc"
+    directory.mkdir()
+    (directory / "holdfast.toml").write_text(
+        '[backup]\nmode = "auto"\n', encoding="utf-8"
+    )
+
+    code = main(["--config-dir", str(directory), "backup", "--discover"])
+
+    assert code == 0
+    assert capsys.readouterr().out.startswith('backup.mode is "auto"')
+    assert not (directory / "components.toml").exists()
+
+
+def test_backup_discover_reports_a_bad_configuration(tmp_path, capsys, monkeypatch):
+    _an_empty_docker_host(monkeypatch)
+    directory = tmp_path / "etc"
+    directory.mkdir()
+    (directory / "holdfast.toml").write_text(
+        '[backup]\nmode = "sometimes"\n', encoding="utf-8"
+    )
+
+    code = main(["--config-dir", str(directory), "backup", "--discover"])
+
+    assert code == 1
+    assert "holdfast backup: backup.mode is 'sometimes'" in capsys.readouterr().err
+    assert not (directory / "components.toml").exists()
 
 
 # --------------------------------------------------------------------------

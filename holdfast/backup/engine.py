@@ -180,6 +180,9 @@ def dry_run(cfg: Config, *, probe: Any, components_file: Path | None = None) -> 
             "",
             f"estimated size before compression: {selection.estimate_mb} MB",
         ]
+    if selection.warnings:
+        lines += ["", "warnings:"]
+        lines += [f"  {warning}" for warning in selection.warnings]
     return "\n".join(lines) + "\n"
 
 
@@ -223,7 +226,9 @@ def _fill(
         json.dumps(manifest, indent=2), encoding="utf-8"
     )
     write_sha256sums(directory)
-    return BackupResult(snapshot, directory, records, total, [], selection.skipped)
+    return BackupResult(
+        snapshot, directory, records, total, list(selection.warnings), selection.skipped
+    )
 
 
 def _context(cfg: Config, probe: Any) -> BuildContext:

@@ -15,12 +15,12 @@ before the run starts.
 from __future__ import annotations
 
 import os
-import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from ..config import Config
+from .components_file import read_tables, written_by_discover
 from .model import BackupError, Component
 from .registry import components_from_tables
 from .rule import Declared, Plan, Skip, parse_exclusions
@@ -40,6 +40,7 @@ class Selection:
     ]  # component name -> "holdfast.toml" | "components.toml" | "rule"
     skipped: list[Skip] = field(default_factory=list)
     sizes_mb: dict[str, int] = field(default_factory=dict)  # component name -> MB
+    warnings: list[str] = field(default_factory=list)
 
     @property
     def estimate_mb(self) -> int:
@@ -73,17 +74,6 @@ def _size_of(probe: Any, kind: str, where: str) -> int:
     if kind == "volume":
         where = probe.volume_mountpoint(where)
     return probe.directory_size_mb(where)
-
-
-def _read_component_tables(path: Path) -> list[Any]:
-    # Task 9 replaces this with components_file.read_tables; until it lands,
-    # this is the whole reader for components.toml.
-    with path.open("rb") as handle:
-        try:
-            data = tomllib.load(handle)
-        except tomllib.TOMLDecodeError as exc:
-            raise BackupError(f"{path} is not valid TOML: {exc}") from exc
-    return data.get("component", [])
 
 
 def _check_collision(name: str, declared_names: set[str], origin: str) -> None:
@@ -123,16 +113,29 @@ def select(cfg: Config, probe: Any, components_file: Path | None = None) -> Sele
         )
 
     added = []
+    warnings = []
     if components_file is not None and components_file.exists():
-        tables = _read_component_tables(components_file)
-        added = components_from_tables(tables)
-        for component in added:
-            _check_collision(component.name, declared_names, "components.toml")
-            origins[component.name] = "components.toml"
+        if written_by_discover(components_file):
+            added = components_from_tables(read_tables(components_file))
+            for component in added:
+                _check_collision(component.name, declared_names, "components.toml")
+                origins[component.name] = "components.toml"
+        else:
+            # Most likely the draft holdfast 0.2's --discover said to redirect
+            # here and paste into holdfast.toml. Backing it up as it stands
+            # would change what an upgraded machine keeps without anyone
+            # deciding to, so it is left out, loudly.
+            warnings.append(
+                f"{components_file} was not written by holdfast backup "
+                "--discover, so it is ignored; merge what you need into "
+                "holdfast.toml and delete it, or run holdfast backup "
+                "--discover to replace it"
+            )
     return Selection(
         mode=mode,
         components=[*declared, *added],
         origins=origins,
         skipped=[],
         sizes_mb={},
+        warnings=warnings,
     )

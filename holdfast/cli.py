@@ -60,7 +60,7 @@ def build_parser() -> argparse.ArgumentParser:
     backup_mode.add_argument(
         "--discover",
         action="store_true",
-        help="look the machine over and print a draft list of components",
+        help="in manual mode, write what this machine keeps to components.toml",
     )
     restore_cmd = commands.add_parser("restore", help="put a snapshot back")
     restore_cmd.add_argument(
@@ -194,16 +194,13 @@ def main(argv: list[str] | None = None) -> int:
         from .backup.engine import dry_run, run_backup
         from .backup.probe import Probe
 
-        if args.discover:
-            # No configuration is read: this is the command for a machine
-            # nobody has configured yet.
-            print(discover(Probe()), end="")
-            return 0
-
         config_dir = Path(args.config_dir)
         components_file = config_dir / "components.toml"
         try:
             cfg = load_config(machine=config_dir / "holdfast.toml", env=os.environ)
+            if args.discover:
+                print(discover(cfg, Probe(), components_file), end="")
+                return 0
             if args.dry_run:
                 print(
                     dry_run(cfg, probe=Probe(), components_file=components_file),
