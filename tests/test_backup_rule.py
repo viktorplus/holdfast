@@ -645,3 +645,22 @@ def test_a_volume_declared_by_hand_is_not_added_again(declared):
 
     assert result.tables == []
     assert skip_reason(result, "volume uploads") == ["declared by hand"]
+
+
+def test_a_path_exclusion_inside_a_project_is_cut_out_of_its_archive():
+    """The project is still taken whole, minus the one subdirectory the
+    operator named - and the skipped list says so."""
+    result = planned(wordpress_site(), [WP_VOLUME], exclude=["path:/root/myapp/logs"])
+
+    project = next(t for t in result.tables if t["type"] == "path")
+    assert project["path"] == "/root/myapp"
+    assert project["exclude"] == ["root/myapp/db_data", "root/myapp/logs"]
+    assert skip_reason(result, "path /root/myapp/logs") == ["excluded by you"]
+
+
+def test_a_path_exclusion_elsewhere_leaves_the_project_archive_alone():
+    result = planned(wordpress_site(), [WP_VOLUME], exclude=["path:/srv/other"])
+
+    project = next(t for t in result.tables if t["type"] == "path")
+    assert project["exclude"] == ["root/myapp/db_data"]
+    assert skip_reason(result, "path /srv/other") == []

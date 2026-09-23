@@ -569,6 +569,28 @@ def test_the_credentials_file_comes_first_on_the_command_line():
     assert probe.asked[-1][1] == "--defaults-file=/etc/holdfast/mysql.cnf"
 
 
+def test_a_credentials_file_in_a_container_uses_the_client_the_container_has():
+    """MariaDB 11 images carry mariadb-dump and mariadb, not the mysql names,
+    so the file route picks its client inside the container the same way the
+    container_env route does - with --defaults-file still first."""
+    probe = FakeProbe(output="shopdb", running={"c"})
+    component = a_mysql(
+        container="c", defaults_file="/etc/holdfast/mysql.cnf", user="backup"
+    )
+    produce = component.artifacts(ctx_with(probe))[0].produce
+
+    assert produce.startswith("docker exec c sh -c ")
+    assert "command -v mariadb-dump || command -v mysqldump" in produce
+    assert 'exec "$c" --defaults-file=/etc/holdfast/mysql.cnf -u backup ' in produce
+    assert "MYSQL_PWD" not in produce
+    listing = probe.asked[-1]
+    assert listing[:5] == ["docker", "exec", "c", "sh", "-c"]
+    assert "command -v mariadb || command -v mysql" in listing[5]
+    assert (
+        'exec "$c" --defaults-file=/etc/holdfast/mysql.cnf -u backup -N' in (listing[5])
+    )
+
+
 def test_a_refused_login_without_a_credentials_file_names_the_missing_key():
     """The --discover draft leaves defaults_file commented out, and mysql's own
     words - "using password: NO" - do not say which line to change."""

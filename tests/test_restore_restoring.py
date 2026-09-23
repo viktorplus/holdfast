@@ -528,8 +528,24 @@ def test_a_mysql_dump_goes_back_with_the_credentials_it_was_taken_with(
         tmp_path, defaults_file="/etc/holdfast/mysql.cnf", user="backup"
     )
 
-    assert "mysqladmin --defaults-file=/etc/holdfast/mysql.cnf -u backup ping" in ready
-    assert "mysql --defaults-file=/etc/holdfast/mysql.cnf -u backup" in load
+    for line in (ready, load):
+        assert "sh -c" in line
+        assert "MYSQL_PWD" not in line
+    assert "command -v mariadb-admin || command -v mysqladmin" in ready
+    assert 'exec "$c" --defaults-file=/etc/holdfast/mysql.cnf -u backup ping' in ready
+    assert "command -v mariadb || command -v mysql" in load
+    assert 'exec "$c" --defaults-file=/etc/holdfast/mysql.cnf -u backup' in load
+    assert "docker exec -i shop sh -c" in load
+
+
+def test_a_credentials_file_on_the_host_is_read_by_the_host_tools(tmp_path: Path):
+    ready, load = mysql_restore_lines(
+        tmp_path, container="", defaults_file="/etc/holdfast/mysql.cnf"
+    )
+
+    assert ready.count("mysqladmin --defaults-file=/etc/holdfast/mysql.cnf ping") >= 1
+    assert "sh -c" not in ready
+    assert load.endswith(" | mysql --defaults-file=/etc/holdfast/mysql.cnf")
 
 
 def test_a_container_env_dump_goes_back_through_the_containers_password(

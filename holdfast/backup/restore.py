@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import shlex
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +27,7 @@ class VerifyResult:
     snapshot: str
     checked: int
     failures: list[str]
+    warnings: list[str] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -90,15 +91,22 @@ def verify(
         if failure:
             failures.append(failure)
 
-    jobs.record(
-        jobs_dir,
-        "verify",
-        ok=not failures,
-        snapshot=snapshot.snapshot,
-        checked=len(everything),
-        failures=failures,
-    )
-    return VerifyResult(snapshot.snapshot, len(everything), failures)
+    warnings: list[str] = []
+    try:
+        jobs.record(
+            jobs_dir,
+            "verify",
+            ok=not failures,
+            snapshot=snapshot.snapshot,
+            checked=len(everything),
+            failures=failures,
+        )
+    except OSError as exc:
+        # Most often a user who is not root, checking a copy on their own
+        # machine: the check is done and its answer stands; only the record
+        # the watchdog would read is missing, and that is worth saying.
+        warnings.append(f"could not record this verify in {jobs_dir}: {exc}")
+    return VerifyResult(snapshot.snapshot, len(everything), failures, warnings)
 
 
 def _check(record: Record, identity: Identity, run: Run) -> str | None:
@@ -531,8 +539,14 @@ def _mysql_lines(body: str, recipe: dict[str, Any]) -> list[str]:
             f"--defaults-file={shlex.quote(defaults_file)} " if defaults_file else ""
         )
         flags += f"-u {shlex.quote(user)} " if user else ""
-        ping = f"mysqladmin {flags}ping"
-        load = f"mysql {flags}".rstrip()
+        if container and defaults_file:
+            # As in the dump: MariaDB 11 has no mysql-named clients, so the
+            # container's shell picks whichever it has.
+            ping = "sh -c " + shlex.quote(in_container("admin", "", f"{flags}ping"))
+            load = "sh -c " + shlex.quote(in_container("client", "", flags.rstrip()))
+        else:
+            ping = f"mysqladmin {flags}ping"
+            load = f"mysql {flags}".rstrip()
     return [
         _ready(container, ping),
         f"{body} | zstd -dc | " + _exec(container, load, stdin=True),

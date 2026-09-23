@@ -661,3 +661,83 @@ def test_a_dry_run_without_warnings_has_no_warnings_block(tmp_path: Path):
     _, cfg = setup(tmp_path, a_command("mine"))
 
     assert "warnings:" not in dry_run(cfg, probe=None)
+
+
+# --------------------------------------------------------------------------
+# the dry run says what the backup would refuse, and still writes nothing
+# --------------------------------------------------------------------------
+
+REFUSE = "the backup would refuse: "
+
+
+def test_the_dry_run_names_a_missing_encryption_tool(tmp_path: Path, monkeypatch):
+    root, cfg = setup(
+        tmp_path,
+        a_command("mine"),
+        **{
+            "encryption.enabled": True,
+            "encryption.recipients": ["age1" + "qy" * 29],
+        },
+    )
+    monkeypatch.setattr(
+        engine.shutil, "which", lambda name: None if name == "age" else name
+    )
+
+    text = dry_run(cfg, probe=None)
+
+    assert f"\nwarnings:\n  {REFUSE}encryption is on but age is not on PATH" in text
+    assert not root.exists()
+
+
+def test_the_dry_run_names_a_missing_bash(tmp_path: Path, monkeypatch):
+    _, cfg = setup(tmp_path, a_command("mine"))
+    monkeypatch.setattr(
+        engine.shutil, "which", lambda name: None if name == "bash" else name
+    )
+
+    assert f"  {REFUSE}there is no bash on PATH" in dry_run(cfg, probe=None)
+
+
+def test_the_dry_run_names_too_little_room_when_the_root_exists(
+    tmp_path: Path, monkeypatch
+):
+    root, cfg = setup(tmp_path, **{"backup.mode": "auto", "backup.min_free_gb": 8})
+    root.mkdir()
+    monkeypatch.setattr(engine.shutil, "which", lambda name: name)
+    monkeypatch.setattr(
+        engine.shutil,
+        "disk_usage",
+        lambda _: shutil._ntuple_diskusage(
+            100 * GIGABYTE, 90 * GIGABYTE, 10 * GIGABYTE
+        ),
+    )
+
+    text = dry_run(cfg, probe=Machine(tmp_path, size_mb=3000))
+
+    assert f"  {REFUSE}this snapshot is estimated at up to" in text
+    assert list(root.iterdir()) == []
+
+
+def test_the_dry_run_names_too_little_free_space(tmp_path: Path, monkeypatch):
+    root, cfg = setup(tmp_path, a_command("mine"), **{"backup.min_free_gb": 8})
+    root.mkdir()
+    monkeypatch.setattr(engine.shutil, "which", lambda name: name)
+    monkeypatch.setattr(
+        engine.shutil,
+        "disk_usage",
+        lambda _: shutil._ntuple_diskusage(100 * GIGABYTE, 95 * GIGABYTE, 5 * GIGABYTE),
+    )
+
+    assert f"  {REFUSE}{root} has 5.0 GB free" in dry_run(cfg, probe=None)
+
+
+def test_the_dry_run_does_not_create_the_backup_root_to_measure_it(
+    tmp_path: Path, monkeypatch
+):
+    root, cfg = setup(tmp_path, a_command("mine"))
+    monkeypatch.setattr(engine.shutil, "which", lambda name: name)
+
+    text = dry_run(cfg, probe=None)
+
+    assert REFUSE not in text
+    assert not root.exists()

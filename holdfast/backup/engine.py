@@ -180,10 +180,39 @@ def dry_run(cfg: Config, *, probe: Any, components_file: Path | None = None) -> 
             "",
             f"estimated size before compression: {selection.estimate_mb} MB",
         ]
-    if selection.warnings:
+    warnings = [*selection.warnings, *_would_refuse(cfg, encryption, selection)]
+    if warnings:
         lines += ["", "warnings:"]
-        lines += [f"  {warning}" for warning in selection.warnings]
+        lines += [f"  {warning}" for warning in warnings]
     return "\n".join(lines) + "\n"
+
+
+def _would_refuse(
+    cfg: Config, encryption: Encryption, selection: Selection
+) -> list[str]:
+    """The refusals the backup makes before its first byte, as sentences.
+
+    Said rather than raised, so the rest of the dry run still prints; and the
+    disk is measured only where the snapshots already live, because a dry run
+    that created the backup root would no longer be one.
+    """
+    checks: list[Callable[[], None]] = [
+        lambda: _require_tools(encryption, shell_runner)
+    ]
+    root = Path(str(cfg.get("backup.root")))
+    if root.is_dir():
+        minimum_gb = int(cfg.get("backup.min_free_gb") or 0)
+        checks += [
+            lambda: _require_space(root, minimum_gb),
+            lambda: _require_room(root, selection.estimate_mb, minimum_gb),
+        ]
+    found: list[str] = []
+    for check in checks:
+        try:
+            check()
+        except BackupError as exc:
+            found.append(f"the backup would refuse: {exc}")
+    return found
 
 
 def _fill(

@@ -152,6 +152,24 @@ def test_a_whole_snapshot_verifies_and_is_written_down(tmp_path: Path):
     assert entry["last_run"]["snapshot"] == "20260920-231500"
 
 
+def test_a_journal_that_cannot_be_written_does_not_undo_the_verify(tmp_path: Path):
+    """Run by a user who may not write /var/lib/holdfast/jobs, the check has
+    still been done: its answer stands, and the lost record is said aloud."""
+    directory = a_snapshot(tmp_path, artifact("a.bin", PATH_RECIPE))
+    blocked = tmp_path / "not-a-directory"
+    blocked.write_text("", encoding="utf-8")
+
+    with open_identity(None) as identity:
+        result = verify(
+            load_snapshot(directory), identity, jobs_dir=blocked, run=Runs()
+        )
+
+    assert result.ok is True
+    assert result.checked == 1
+    assert len(result.warnings) == 1
+    assert result.warnings[0].startswith("could not record this verify in ")
+
+
 def test_a_changed_byte_is_reported_with_the_file_that_changed(tmp_path: Path):
     directory = a_snapshot(tmp_path, artifact("a.bin", PATH_RECIPE))
     (directory / "a.bin").write_bytes(b"a bodY")

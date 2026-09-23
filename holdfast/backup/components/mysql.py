@@ -210,12 +210,28 @@ class MysqlComponent(Component):
     def _login(self) -> str:
         return f"-u{shlex.quote(self.user or 'root')}"
 
-    def _produce(self, database: str, zstd: str) -> str:
+    def _in_container(self) -> bool:
+        """Whether the client is picked inside the container.
+
+        Always with container_env; with a defaults file too, whenever there is
+        a container, because MariaDB 11 images carry only the mariadb names
+        and a hard-coded mysqldump would not be there to read the file.
+        """
+        return bool(self.credentials or (self.container and self.defaults_file))
+
+    def _script_login(self) -> str:
+        # The defaults file stays the first argument to the client.
         if self.credentials:
+            return self._login()
+        return f"{self._first()}{self._credentials()}".rstrip()
+
+    def _produce(self, database: str, zstd: str) -> str:
+        if self._in_container():
             script = in_container(
                 "dump",
                 self.password_env,
-                f"{self._login()} {DUMP_FLAGS} --databases {shlex.quote(database)}",
+                f"{self._script_login()} {DUMP_FLAGS} "
+                f"--databases {shlex.quote(database)}",
             )
             return (
                 f"docker exec {shlex.quote(self.container)} sh -c "
@@ -232,8 +248,8 @@ class MysqlComponent(Component):
         )
 
     def _listing(self) -> list[str]:
-        if self.credentials:
-            args = f"{self._login()} -N -B -e {shlex.quote(LIST_DATABASES)}"
+        if self._in_container():
+            args = f"{self._script_login()} -N -B -e {shlex.quote(LIST_DATABASES)}"
             script = in_container("client", self.password_env, args)
             return ["docker", "exec", self.container, "sh", "-c", script]
         return self._argv("mysql", "-N", "-B", "-e", LIST_DATABASES)

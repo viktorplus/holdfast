@@ -660,3 +660,36 @@ def test_a_restore_with_nobody_to_ask_says_so_instead_of_hanging(
 
     assert code == 1
     assert "--yes" in capsys.readouterr().err
+
+
+def test_restore_verify_prints_a_lost_journal_as_a_warning(
+    tmp_path, capsys, monkeypatch
+):
+    from support import PATH_RECIPE, artifact, snapshot_dir
+
+    from holdfast.backup import restore
+    from holdfast.backup.restore import VerifyResult
+
+    directory = snapshot_dir(tmp_path, artifact("a.bin", PATH_RECIPE))
+    _restore_config(tmp_path / "etc", tmp_path / "jobs")
+    monkeypatch.setattr(
+        restore,
+        "verify",
+        lambda *a, **k: VerifyResult("s", 1, [], ["could not record this verify"]),
+    )
+
+    code = main(
+        [
+            "--config-dir",
+            str(tmp_path / "etc"),
+            "restore",
+            "verify",
+            "--snapshot",
+            str(directory),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert code == 0
+    assert "checked 1 artifacts in " in captured.out
+    assert "holdfast restore verify: could not record this verify" in captured.err

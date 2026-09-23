@@ -384,16 +384,22 @@ def plan(
             skipped.append(Skip(what, "the project directory is not on this machine"))
         else:
             name = name_for("project-" + slug(projects[wd]))
+            # A path the operator excluded inside the project is cut out of
+            # its archive; the rest of the project is still worth keeping.
+            carved = [p for p in exclude.paths if under(p, wd) and p != wd]
+            skipped.extend(Skip(f"path {p}", "excluded by you") for p in carved)
             tables.append(
                 {
                     "type": "path",
                     "name": name,
                     "path": wd,
-                    "exclude": [
-                        s.lstrip("/")
-                        for s in sorted(data_binds)
-                        if under(s, wd) and s != wd
-                    ],
+                    "exclude": sorted(
+                        {
+                            s.lstrip("/")
+                            for s in [*data_binds, *carved]
+                            if under(s, wd) and s != wd
+                        }
+                    ),
                 }
             )
             measure.append((name, "path", wd))

@@ -269,6 +269,8 @@ def main(argv: list[str] | None = None) -> int:
                     result = verify(snapshot, key, jobs_dir=jobs_dir, run=run_line)
                     for failure in result.failures:
                         print(f"holdfast restore verify: {failure}", file=sys.stderr)
+                    for warning in result.warnings:
+                        print(f"holdfast restore verify: {warning}", file=sys.stderr)
                     print(f"checked {result.checked} artifacts in {snapshot.snapshot}")
                     return 0 if result.ok else 1
 
