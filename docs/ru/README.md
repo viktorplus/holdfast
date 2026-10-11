@@ -24,6 +24,7 @@
 | Узнать, что делает команда или флаг | [05-commands.md](05-commands.md) |
 | Разобрать сообщение об ошибке | [06-errors.md](06-errors.md) |
 | Обновиться с версии 0.2 | [07-upgrade-from-0.2.md](07-upgrade-from-0.2.md) |
+| Управлять многими серверами из окна Windows | [holdfast-panel](https://github.com/viktorplus/holdfast-panel) (отдельный репозиторий) |
 
 ## Как читать команды
 

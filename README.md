@@ -124,6 +124,8 @@ holdfast has no scheduler of its own. `docs/install.md` has an example.
 | [`docs/threat-model.md`](docs/threat-model.md) | what a point-in-time scanner can and cannot see |
 | [`docs/ru/`](docs/ru/README.md) | руководство на русском: установка, бэкап, состав архива, восстановление, справочник команд |
 
+A Windows control panel for many servers (SSH key enrolment, install templates, backups, monitoring, diagnostics) lives in a separate repository: [holdfast-panel](https://github.com/viktorplus/holdfast-panel).
+
 ## What it can and cannot see
 
 holdfast is a point-in-time state scanner, not an EDR. It reads the host
