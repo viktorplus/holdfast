@@ -818,3 +818,95 @@ def test_restore_verify_json_reports_the_count_and_the_failures(tmp_path, capsys
         "failures": [],
         "warnings": [],
     }
+
+
+# --- --json, without a shell: the answers are faked, so these run on Windows too
+
+
+def test_backup_json_carries_the_result_fields(tmp_path, capsys, monkeypatch):
+    import json
+
+    from holdfast.backup import engine
+    from holdfast.backup.rule import Skip
+
+    result = engine.BackupResult(
+        snapshot="20261011-020000",
+        directory=Path("/opt/backups/20261011-020000"),
+        artifacts=[{"path": "a.bin", "size": 3}],
+        total_bytes=3,
+        warnings=["offsite is behind"],
+        skipped=[Skip("volume x", "no container uses it")],
+    )
+    monkeypatch.setattr(engine, "run_backup", lambda cfg, components_file: result)
+    directory = a_machine(tmp_path)
+
+    code = main(["--config-dir", str(directory), "backup", "--json"])
+
+    captured = capsys.readouterr()
+    report = json.loads(captured.out)
+    assert code == 0
+    assert report["status"] == "done" and report["snapshot"] == "20261011-020000"
+    assert report["total_bytes"] == 3 and report["artifacts"] == [
+        {"path": "a.bin", "size": 3}
+    ]
+    assert report["warnings"] == ["offsite is behind"]
+    assert report["skipped"] == [{"what": "volume x", "reason": "no container uses it"}]
+    # in JSON mode the warnings are in the object, and nothing else is printed
+    assert captured.err == ""
+
+
+def test_backup_json_reports_a_run_that_is_already_going(tmp_path, capsys, monkeypatch):
+    import json
+
+    from holdfast.backup import BackupBusy, engine
+
+    def busy(cfg, components_file):
+        raise BackupBusy("another backup is already running")
+
+    monkeypatch.setattr(engine, "run_backup", busy)
+
+    code = main(["--config-dir", str(a_machine(tmp_path)), "backup", "--json"])
+
+    report = json.loads(capsys.readouterr().out)
+    assert code == 0 and report["status"] == "busy"
+    assert "already running" in report["message"]
+
+
+def test_restore_verify_json_of_a_broken_copy_is_a_failure(
+    tmp_path, capsys, monkeypatch
+):
+    import json
+
+    from support import PATH_RECIPE, artifact, snapshot_dir
+
+    from holdfast.backup import restore as restore_module
+
+    directory = snapshot_dir(tmp_path, artifact("a.bin", PATH_RECIPE))
+    _restore_config(tmp_path / "etc", tmp_path / "jobs")
+    broken = restore_module.VerifyResult(
+        snapshot=directory.name, checked=1, failures=["a.bin: checksum differs"]
+    )
+    monkeypatch.setattr(restore_module, "verify", lambda *a, **k: broken)
+
+    code = main(
+        [
+            "--config-dir",
+            str(tmp_path / "etc"),
+            "restore",
+            "verify",
+            "--snapshot",
+            str(directory),
+            "--json",
+        ]
+    )
+
+    report = json.loads(capsys.readouterr().out)
+    assert code == 1
+    assert report["ok"] is False and report["failures"] == ["a.bin: checksum differs"]
+
+
+@pytest.mark.parametrize("extra", [[], ["--yes"], ["--dry-run"]])
+def test_restore_json_is_refused_unless_it_is_list_or_verify(extra):
+    with pytest.raises(SystemExit) as caught:
+        main(["restore", "--snapshot", "x", "--json", *extra])
+    assert caught.value.code == 2
