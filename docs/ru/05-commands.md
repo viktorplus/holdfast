@@ -64,7 +64,12 @@ holdfast init --fresh --host-label web-1 --backup-mode auto
 
 ```sh
 holdfast config check
+holdfast config check --json
 ```
+
+`--json` печатает один объект: `{"complete": true|false, "complaints": [{"key", "why", "fix"}]}`. Код возврата тот же (1, если чего-то не хватает).
+Если файл настроек повреждён, команда печатает ошибку в stderr, stdout пуст, код 1:
+разбирайте stdout, только если он не пуст.
 
 ## holdfast backup
 
@@ -74,6 +79,7 @@ holdfast config check
 holdfast backup                 # сделать снимок
 holdfast backup --dry-run       # показать, что будет взято; ничего не писать
 holdfast backup --discover      # режим manual: записать список в components.toml
+holdfast backup --json          # то же, что backup, но результат — JSON
 ```
 
 | Флаг | Смысл |
@@ -81,16 +87,17 @@ holdfast backup --discover      # режим manual: записать списо
 | (без флагов) | снимок: зашифрованные артефакты, `manifest.json`, `SHA256SUMS`; потом ротация и отправка второй копии, если настроена |
 | `--dry-run` | печатает выбор и точные команды, код возврата 0; не пишет и не меняет. Проверяет конфигурацию, Docker и пароли баз; дампы не снимает |
 | `--discover` | в `manual` пишет `/etc/holdfast/components.toml` (прежний — в `.prev`); в `auto` ничего не пишет и объясняет почему |
+| `--json` | результат запуска одним JSON-объектом: `{"status": "done", "snapshot", "directory", "total_bytes", "artifacts", "warnings", "skipped"}`; если бэкап уже идёт — `{"status": "busy", "message"}` (код 0). Предупреждения попадают в `warnings`, а не в stderr. Ошибки по-прежнему идут в stderr с кодом 1 и пустым stdout |
 
-`--dry-run` и `--discover` взаимоисключающие. Если бэкап уже идёт, команда
+`--dry-run` и `--discover` взаимоисключающие; `--json` не сочетается ни с одним из них (код 2). Если бэкап уже идёт, команда
 сообщает об этом и возвращает 0. Подробнее: [02-backup.md](02-backup.md),
 [03-contents.md](03-contents.md).
 
 ## holdfast restore
 
 ```sh
-holdfast restore list   --snapshot ПАПКА
-holdfast restore verify --snapshot ПАПКА --identity КЛЮЧ
+holdfast restore list   --snapshot ПАПКА [--json]
+holdfast restore verify --snapshot ПАПКА --identity КЛЮЧ [--json]
 holdfast restore        --snapshot ПАПКА --identity КЛЮЧ [флаги]
 ```
 
@@ -104,9 +111,10 @@ holdfast restore        --snapshot ПАПКА --identity КЛЮЧ [флаги]
 | `--identity-passphrase-file ФАЙЛ` | файл с паролем защищённого ключа `gpg` (на аварийной машине нет pinentry) |
 | `--component ИМЯ` | восстановить только этот компонент (имена — из `restore list`). Все рецепты снимка всё равно проверяются |
 | `--root ПАПКА` | куда класть `path`-компоненты (по умолчанию `/`). Для репетиции: `--root /tmp/drill`. Только файлы; снимок с томом или базой в области отклоняется |
-| `--dry-run` | напечатать план и ничего не менять, включая контейнеры |
-| `--yes` | не спрашивать подтверждение (для скриптов). Без него нужно набрать имя машины, а без терминала команда остановится |
-| `--no-stop` | не останавливать и не запускать контейнеры. Нужно на голом сервере, где контейнеров ещё нет |
+| `--json` | только для `list` и `verify`: вывод JSON. `list` — `{snapshot, host_label, created_at, encryption, records[], unrestorable[]}`; `verify` — `{snapshot, checked, ok, failures[], warnings[]}` (код 1, если `ok` ложно). С настоящим восстановлением `--json` не принимается (код 2) |
+| `--dry-run` | напечатать план и ничего не менять, включая контейнеры. Все проверки до записи он всё равно делает (суммы, ключ, вопрос к Docker про безымянные тома) |
+| `--yes` | не спрашивать подтверждение (для скриптов). Без него нужно набрать `host-label` из снимка (первая строка `restore list`), а без терминала команда остановится |
+| `--no-stop` | не останавливать и не запускать контейнеры. Для компонента-папки не обязателен (контейнеры останавливаются только при восстановлении томов и баз); нужен, если в область попали тома или базы, а контейнеров ещё нет |
 | `--from-other-host` | разрешить снимок, снятый на машине с другим `host-label` |
 | `--pg-container ИМЯ` | заменить контейнер PostgreSQL из рецепта |
 | `--pg-user ИМЯ` | заменить пользователя PostgreSQL из рецепта |
@@ -146,6 +154,15 @@ holdfast audit --coverage
 | `audit` | ни одна проверка не провалена | есть FAIL |
 | `restore verify` | все артефакты читаются | хоть один не прочитался |
 | `backup --dry-run` | выбор напечатан (даже с `warnings:`) | ошибка конфигурации |
+| `init` | файл создан | ошибка (в том числе файл уже есть) |
+| `config check` | всё на месте | чего-то не хватает, или файл не читается |
+| `restore`, `restore list` | восстановлено / список напечатан | `ConfigError`, `RestoreError`, `BackupError` |
+
+Код 2 — неверные аргументы командной строки (например, неизвестный флаг или
+`--json` вместе с `--dry-run`).
+
+С `--json` код 1 бывает и «с ответом» (`config check`, `restore verify`:
+в stdout JSON), и «без ответа» (ошибка в stderr, stdout пуст).
 
 Ошибки выводятся с именем команды: `holdfast backup: ...`. Разбор — в
 [06-errors.md](06-errors.md).
@@ -166,7 +183,7 @@ holdfast audit --coverage
 | `backup.exclude` | `[]` | `"volume:…"`, `"path:…"`, `"database:контейнер/база"`, `"container:…"` |
 | `backup.root` | `/opt/backups` | где лежат снимки |
 | `backup.retention_days` | `7` | сколько дней хранить; `0` — не удалять |
-| `backup.min_free_gb` | `8` | минимум свободного места после бэкапа |
+| `backup.min_free_gb` | `8` | минимум свободного места: проверяется до запуска, а в режиме `auto` ещё и по оценке размера снимка (после бэкапа должно остаться не меньше) |
 | `backup.zstd_level` | `10` | степень сжатия |
 | `backup.lock_file` | `/run/holdfast-backup.lock` | замок от двух одновременных бэкапов |
 | `offsite.remote` | `""` | назначение `rclone`, например `shared:backups`; пусто — второй копии нет |

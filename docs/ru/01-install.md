@@ -18,7 +18,8 @@
 шаге ещё не настроен — он в [02-backup.md](02-backup.md).
 
 Всё делается от `root`. Это же нужно и на **голом сервере** при восстановлении:
-для него достаточно шагов 1–4 ниже, дальше — [04-restore.md](04-restore.md).
+для него нужны шаги 1–4 ниже (вход, пакеты и Docker, holdfast, `init`);
+дальше — [04-restore.md](04-restore.md).
 
 ## Шаг 1. Вход на сервер
 
@@ -137,6 +138,7 @@ holdfast config check
 ```
 /etc/holdfast/holdfast.toml          конфигурация машины, права 0600
 /etc/holdfast/components.toml        только в режиме manual: список от --discover
+/etc/holdfast/components.toml.prev   предыдущий такой список
 /opt/holdfast/                       сама программа
 /opt/backups/<дата-время>/           снимки
 /opt/backups/latest                  ссылка на последний

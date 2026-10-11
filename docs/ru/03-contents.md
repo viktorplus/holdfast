@@ -89,7 +89,9 @@ estimated size before compression: 525 MB
 | `from components.toml` | только `manual`: список от `--discover` |
 
 Размер (`~210 MB`) — грубая оценка сверху, до сжатия. Если после бэкапа на диске
-осталось бы меньше `backup.min_free_gb`, бэкап откажется запускаться.
+осталось бы меньше `backup.min_free_gb`, бэкап откажется запускаться. Эта оценка
+работает только в режиме `auto`; в `manual` проверяется свободное место до
+запуска.
 
 Имя безымянного тома случайное и на другом сервере будет другим, поэтому его
 компонент называется по контейнеру и пути монтирования
@@ -254,7 +256,9 @@ container = "myapp-wordpress-1"
 destination = "/var/www/html"
 ```
 
-`volume` и `container`/`destination` вместе указывать нельзя.
+`volume` и `container`/`destination` вместе указывать нельзя. `exclude` и
+`max_mb` относятся только к форме «все тома» и вместе с `volume` или
+`container` дают ошибку: не копируйте `exclude = []` из блока `path`.
 
 Не создавайте `docker_volume` без `volume` и `container` в режиме `auto`: он
 берёт все тома по имени, в том числе бесхозные дубли (`max_mb` по умолчанию 512).
@@ -277,10 +281,22 @@ check = "cat >/dev/null"
 - `artifact` — имя файла в снимке (по умолчанию `<name>.bin`);
 - `check` — команда, читающая содержимое со stdin и возвращающая не 0, если оно
   нечитаемо (по умолчанию `cat >/dev/null`, то есть проверки формата нет);
-- `restore` — таблица с рецептом восстановления. **Без неё `holdfast restore`
-  этот артефакт не вернёт**: он будет назван в `restore list`, в плане и в
-  результате как невосстановленный. Формат таблицы — needs verification:
-  смотрите `docs/backup.md` и сам `manifest.json`.
+- `restore` — таблица с рецептом восстановления; она копируется в манифест
+  как есть. **Без неё `holdfast restore` этот артефакт не вернёт**: он будет
+  назван в `restore list`, в плане и в результате как невосстановленный.
+  Поле `type` обязательно и берётся из списка `path`, `docker_volume`,
+  `pg_globals`, `pg_database`, `mysql_database`, `none`. **Любое другое
+  значение делает нечитаемым весь снимок** (`list`, `verify` и `restore`
+  проверяют все рецепты), а не пропускает один артефакт. Нужные ключи:
+  для `path` — `target` (абсолютный путь без `..`); для `docker_volume` —
+  `volume` или `container` вместе с `destination`; для `pg_globals` и
+  `pg_database` — `user` (и `database` для второго; `container` по желанию);
+  для `mysql_database` — `database` и `user` (по желанию `container`,
+  `defaults_file` или `credentials = "container_env"` с `password_env`).
+  holdfast не сжимает вывод `command`, а восстановление ждёт тот формат,
+  который записал бы встроенный компонент (`zstd | tar` для `path` и
+  `docker_volume`, `zstd | psql` или `zstd | mysql` для дампов, `pg_restore`
+  для `pg_database`): `produce` должен выдавать ровно его.
 
 Команда выше — только иллюстрация формы; саму команду для вашего сервиса
 проверьте вручную.
