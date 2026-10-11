@@ -34,6 +34,27 @@ class VerifyResult:
         return not self.failures
 
 
+def snapshot_as_dict(snapshot: Snapshot) -> dict:
+    """What `render_list` says, as data for a program to read."""
+
+    def row(record) -> dict:
+        return {
+            "path": record.path,
+            "component": record.component,
+            "kind": record.kind,
+            "size": record.size,
+        }
+
+    return {
+        "snapshot": snapshot.snapshot,
+        "host_label": snapshot.host_label,
+        "created_at": snapshot.created_at,
+        "encryption": snapshot.encryption,
+        "records": [row(r) for r in snapshot.records],
+        "unrestorable": [row(r) for r in snapshot.unrestorable],
+    }
+
+
 def render_list(snapshot: Snapshot) -> str:
     """What is in this copy, answered without a key."""
     encryption = snapshot.encryption

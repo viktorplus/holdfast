@@ -6,7 +6,9 @@ Subcommands are added by the stage that implements them; this file only routes.
 from __future__ import annotations
 
 import argparse
+import json
 import sys
+from dataclasses import asdict
 from pathlib import Path
 
 import holdfast
@@ -32,7 +34,10 @@ def build_parser() -> argparse.ArgumentParser:
     commands.add_parser("version", help="print the version and exit")
     config_cmd = commands.add_parser("config", help="inspect the configuration")
     config_actions = config_cmd.add_subparsers(dest="action")
-    config_actions.add_parser("check", help="report what is missing")
+    check_cmd = config_actions.add_parser("check", help="report what is missing")
+    check_cmd.add_argument(
+        "--json", action="store_true", help="print the answer as JSON"
+    )
     init_cmd = commands.add_parser("init", help="set this machine up")
     mode = init_cmd.add_mutually_exclusive_group(required=True)
     mode.add_argument(
@@ -69,6 +74,9 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="in manual mode, write what this machine keeps to components.toml",
     )
+    backup_cmd.add_argument(
+        "--json", action="store_true", help="print the result as JSON"
+    )
     restore_cmd = commands.add_parser("restore", help="put a snapshot back")
     restore_cmd.add_argument(
         "action",
@@ -96,6 +104,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     restore_cmd.add_argument(
         "--component", metavar="NAME", help="restore only this component"
+    )
+    restore_cmd.add_argument(
+        "--json", action="store_true", help="with list or verify, print JSON"
     )
     restore_cmd.add_argument(
         "--dry-run", action="store_true", help="print the plan and change nothing"
@@ -158,6 +169,14 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.command == "backup" and args.json and (args.dry_run or args.discover):
+        parser.error("--json answers a backup run; --dry-run and --discover print text")
+    if (
+        args.command == "restore"
+        and args.json
+        and args.action not in ("list", "verify")
+    ):
+        parser.error("--json goes with restore list or restore verify")
 
     if args.command == "version":
         print(holdfast.__version__)
@@ -192,7 +211,14 @@ def main(argv: list[str] | None = None) -> int:
             print(f"holdfast config check: {exc}", file=sys.stderr)
             return 1
         found = complaints(cfg)
-        print(format_complaints(found))
+        if args.json:
+            print(
+                json.dumps(
+                    {"complete": not found, "complaints": [asdict(c) for c in found]}
+                )
+            )
+        else:
+            print(format_complaints(found))
         return 1 if found else 0
 
     if args.command == "backup":
@@ -220,11 +246,29 @@ def main(argv: list[str] | None = None) -> int:
         except BackupBusy as exc:
             # Not an error: the nightly timer overlapping a manual run. A
             # non-zero code here would page somebody every such night.
-            print(f"holdfast backup: {exc}")
+            if args.json:
+                print(json.dumps({"status": "busy", "message": str(exc)}))
+            else:
+                print(f"holdfast backup: {exc}")
             return 0
         except (ConfigError, BackupError) as exc:
             print(f"holdfast backup: {exc}", file=sys.stderr)
             return 1
+        if args.json:
+            print(
+                json.dumps(
+                    {
+                        "status": "done",
+                        "snapshot": result.snapshot,
+                        "directory": str(result.directory),
+                        "total_bytes": result.total_bytes,
+                        "artifacts": result.artifacts,
+                        "warnings": result.warnings,
+                        "skipped": [skip.as_dict() for skip in result.skipped],
+                    }
+                )
+            )
+            return 0
         for warning in result.warnings:
             print(f"holdfast backup: {warning}", file=sys.stderr)
         print(
@@ -241,7 +285,7 @@ def main(argv: list[str] | None = None) -> int:
         from .backup.decrypt import open_identity
         from .backup.model import BackupError, RestoreError
         from .backup.probe import Probe
-        from .backup.restore import render_list, restore, verify
+        from .backup.restore import render_list, restore, snapshot_as_dict, verify
         from .backup.snapshot import load_snapshot
 
         config_dir = Path(args.config_dir)
@@ -252,7 +296,11 @@ def main(argv: list[str] | None = None) -> int:
             cfg = load_config(machine=config_dir / "holdfast.toml", env=os.environ)
             snapshot = load_snapshot(Path(args.snapshot))
             if args.action == "list":
-                print(render_list(snapshot))
+                print(
+                    json.dumps(snapshot_as_dict(snapshot))
+                    if args.json
+                    else render_list(snapshot)
+                )
                 return 0
 
             jobs_dir = Path(str(cfg.get("jobs.dir")))
@@ -267,6 +315,19 @@ def main(argv: list[str] | None = None) -> int:
                     from .backup.engine import run_line
 
                     result = verify(snapshot, key, jobs_dir=jobs_dir, run=run_line)
+                    if args.json:
+                        print(
+                            json.dumps(
+                                {
+                                    "snapshot": snapshot.snapshot,
+                                    "checked": result.checked,
+                                    "ok": result.ok,
+                                    "failures": result.failures,
+                                    "warnings": result.warnings,
+                                }
+                            )
+                        )
+                        return 0 if result.ok else 1
                     for failure in result.failures:
                         print(f"holdfast restore verify: {failure}", file=sys.stderr)
                     for warning in result.warnings:

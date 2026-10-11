@@ -693,3 +693,128 @@ def test_restore_verify_prints_a_lost_journal_as_a_warning(
     assert code == 0
     assert "checked 1 artifacts in " in captured.out
     assert "holdfast restore verify: could not record this verify" in captured.err
+
+
+# --------------------------------------------------------------------------
+# --json: the same answers, for a program to read
+# --------------------------------------------------------------------------
+
+
+def test_config_check_json_lists_the_complaints(tmp_path, capsys, monkeypatch):
+    import json
+
+    monkeypatch.delenv("HOLDFAST_API_TOKEN", raising=False)
+    code = main(["--config-dir", str(tmp_path), "config", "check", "--json"])
+
+    report = json.loads(capsys.readouterr().out)
+    assert code == 1
+    assert report["complete"] is False
+    assert "host_label" in [c["key"] for c in report["complaints"]]
+    assert set(report["complaints"][0]) == {"key", "why", "fix"}
+
+
+def test_restore_list_json_describes_the_snapshot(tmp_path, capsys):
+    import json
+
+    from support import PATH_RECIPE, artifact, snapshot_dir
+
+    directory = snapshot_dir(tmp_path, artifact("a.bin", PATH_RECIPE))
+    code = main(["restore", "list", "--snapshot", str(directory), "--json"])
+
+    report = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert report["snapshot"] == directory.name
+    assert {"host_label", "created_at", "encryption", "records", "unrestorable"} <= set(
+        report
+    )
+    record = report["records"][0]
+    assert record["path"].endswith("a.bin")
+    assert {"component", "kind", "size"} <= set(record)
+
+
+@needs_sh
+def test_a_backup_json_names_the_snapshot_and_the_artifacts(tmp_path, capsys):
+    import json
+
+    directory = a_machine(tmp_path)
+
+    code = main(["--config-dir", str(directory), "backup", "--json"])
+
+    report = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert report["status"] == "done"
+    assert Path(report["directory"]).is_dir()
+    assert report["total_bytes"] > 0
+    assert len(report["artifacts"]) == 1
+    assert isinstance(report["warnings"], list)
+    assert report["skipped"] == []
+
+
+@posix_only
+def test_a_backup_json_says_busy_when_another_run_holds_the_lock(tmp_path, capsys):
+    import fcntl
+    import json
+
+    lock = tmp_path / "holdfast.lock"
+    directory = a_machine(tmp_path)
+
+    with open(lock, "w") as held:
+        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        code = main(["--config-dir", str(directory), "backup", "--json"])
+
+    assert code == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "busy"
+
+
+def test_a_backup_problem_in_json_is_still_an_error_on_stderr(tmp_path, capsys):
+    directory = tmp_path / "etc"
+    directory.mkdir()
+    (directory / "holdfast.toml").write_text(
+        '[backup]\nmode = "sometimes"\n', encoding="utf-8"
+    )
+
+    code = main(["--config-dir", str(directory), "backup", "--json"])
+
+    captured = capsys.readouterr()
+    assert code == 1
+    assert captured.out == ""
+    assert "holdfast backup:" in captured.err
+
+
+def test_json_is_refused_with_dry_run_and_discover():
+    for other in ("--dry-run", "--discover"):
+        with pytest.raises(SystemExit) as caught:
+            main(["backup", "--json", other])
+        assert caught.value.code == 2
+
+
+@needs_sh
+@pytest.mark.skipif(os.name == "nt", reason="Git Bash's cat cannot open a Windows path")
+def test_restore_verify_json_reports_the_count_and_the_failures(tmp_path, capsys):
+    import json
+
+    from support import PATH_RECIPE, artifact, snapshot_dir
+
+    directory = snapshot_dir(tmp_path, artifact("a.bin", PATH_RECIPE))
+    _restore_config(tmp_path / "etc", tmp_path / "jobs")
+    code = main(
+        [
+            "--config-dir",
+            str(tmp_path / "etc"),
+            "restore",
+            "verify",
+            "--snapshot",
+            str(directory),
+            "--json",
+        ]
+    )
+
+    report = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert report == {
+        "snapshot": directory.name,
+        "checked": 1,
+        "ok": True,
+        "failures": [],
+        "warnings": [],
+    }
